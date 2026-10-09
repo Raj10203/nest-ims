@@ -23,7 +23,7 @@ steps:
       runOptions: 'commands'
       commands: |
         set -e
-        IMAGE="$(dockerHubUsername)/$(dockerImageName):${{ parameters.imageTag }}"
+        IMAGE="raj10203/nest-ims:${{ parameters.imageTag }}"
         echo "Deploying image: $IMAGE"
         sudo /opt/nest-ims/deploy.sh "$IMAGE"
       readyTimeout: '20000'
