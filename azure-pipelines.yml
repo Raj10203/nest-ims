@@ -9,10 +9,6 @@ parameters:
     type: string
     default: '48a213b6fbc237b3f6e83a239c8c36c38817e389'
 
-variables:
-  dockerHubUsername: 'raj10203'
-  dockerImageName: 'nest-ims'
-
 steps:
   - checkout: none
 
@@ -23,7 +19,6 @@ steps:
       runOptions: 'commands'
       commands: |
         set -e
-        IMAGE="raj10203/nest-ims:${{ parameters.imageTag }}"
-        echo "Deploying image: $IMAGE"
-        sudo /opt/nest-ims/deploy.sh "$IMAGE"
+        echo "Deploying image: raj10203/nest-ims:${{ parameters.imageTag }}"
+        sudo /opt/nest-ims/deploy.sh "raj10203/nest-ims:${{ parameters.imageTag }}"
       readyTimeout: '20000'
