@@ -1,0 +1,29 @@
+trigger: none
+
+pool:
+  vmImage: ubuntu-latest
+
+parameters:
+  - name: imageTag
+    displayName: Git commit SHA to deploy
+    type: string
+    default: ''
+
+variables:
+  dockerHubUsername: 'raj10203'
+  dockerImageName: 'nest-ims'
+
+steps:
+  - checkout: none
+
+  - task: SSH@0
+    displayName: Deploy image to Azure VM
+    inputs:
+      sshEndpoint: 'nest-ims-vm-service-connection'
+      runOptions: 'commands'
+      commands: |
+        set -e
+        IMAGE="$(dockerHubUsername)/$(dockerImageName):${{ parameters.imageTag }}"
+        echo "Deploying image: $IMAGE"
+        sudo /opt/nest-ims/deploy.sh "$IMAGE"
+      readyTimeout: '20000'
