@@ -7,7 +7,7 @@ parameters:
   - name: imageTag
     displayName: Git commit SHA to deploy
     type: string
-    default: ''
+    default: '48a213b6fbc237b3f6e83a239c8c36c38817e389'
 
 variables:
   dockerHubUsername: 'raj10203'
