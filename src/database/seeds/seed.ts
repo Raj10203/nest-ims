@@ -1,7 +1,7 @@
 import { DataSource } from 'typeorm';
 import { ROLE_LEVELS, RoleName } from '../../common/enums/role-name.enum.js';
 import { hashSecret } from '../../common/security/secret-hash.js';
-import { env } from '../../config/env.js';
+import { getSeedEnv } from '../../config/seed-env.js';
 import { Permission } from '../../entities/permission.entity.js';
 import { Role } from '../../entities/role.entity.js';
 import { User } from '../../entities/user.entity.js';
@@ -44,24 +44,26 @@ export async function seed(dataSource: DataSource): Promise<void> {
       await roleRepo.save(role);
     }
 
-    // First super admin (only created, never overwritten).
-    if (!(await userRepo.existsBy({ email: env.SEED_SUPER_ADMIN_EMAIL }))) {
-      const superAdminRole = await roleRepo.findOneByOrFail({
-        name: RoleName.SUPER_ADMIN,
-      });
+    // First super admin: created only when no super admin exists yet, so the
+    // SEED_SUPER_ADMIN_* variables are only needed on the very first run.
+    const superAdminRole = await roleRepo.findOneByOrFail({
+      name: RoleName.SUPER_ADMIN,
+    });
+    if (!(await userRepo.existsBy({ roleId: superAdminRole.id }))) {
+      const seedEnv = getSeedEnv();
       await userRepo.save(
         userRepo.create({
-          firstName: env.SEED_SUPER_ADMIN_FIRST_NAME,
+          firstName: seedEnv.SEED_SUPER_ADMIN_FIRST_NAME,
           middleName: null,
-          lastName: env.SEED_SUPER_ADMIN_LAST_NAME,
-          email: env.SEED_SUPER_ADMIN_EMAIL.toLowerCase(),
-          password: await hashSecret(env.SEED_SUPER_ADMIN_PASSWORD),
+          lastName: seedEnv.SEED_SUPER_ADMIN_LAST_NAME,
+          email: seedEnv.SEED_SUPER_ADMIN_EMAIL.toLowerCase(),
+          password: await hashSecret(seedEnv.SEED_SUPER_ADMIN_PASSWORD),
           emailVerifiedAt: new Date(),
           roleId: superAdminRole.id,
           createdById: null,
         }),
       );
-      console.log(`Created super admin ${env.SEED_SUPER_ADMIN_EMAIL}`);
+      console.log(`Created super admin ${seedEnv.SEED_SUPER_ADMIN_EMAIL}`);
     }
   });
 }
