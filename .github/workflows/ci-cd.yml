@@ -30,3 +30,21 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/nest-ims:${{ github.sha }}
             ${{ secrets.DOCKERHUB_USERNAME }}/nest-ims:latest
+
+      - name: Trigger Azure DevOps Deployment
+        env:
+          AZDO_ORG: ${{ secrets.AZDO_ORG }}
+          AZDO_PROJECT: ${{ secrets.AZDO_PROJECT }}
+          AZDO_PIPELINE_ID: ${{ secrets.AZDO_PIPELINE_ID }}
+          AZDO_PAT: ${{ secrets.AZDO_PAT }}
+        run: |
+          set -e
+
+          echo "Triggering Azure DevOps deployment for commit: ${GITHUB_SHA}"
+
+          curl --fail-with-body --silent --show-error \
+            --user ":${AZDO_PAT}" \
+            --request POST \
+            --header "Content-Type: application/json" \
+            --data "{\"templateParameters\":{\"imageTag\":\"${GITHUB_SHA}\"}}" \
+            "https://dev.azure.com/${AZDO_ORG}/${AZDO_PROJECT}/_apis/pipelines/${AZDO_PIPELINE_ID}/runs?api-version=7.1"
