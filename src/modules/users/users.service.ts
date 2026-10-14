@@ -27,8 +27,8 @@ export class UsersService {
   ) {}
 
   async create(actor: User, dto: CreateUserDto): Promise<User> {
-    const role = await this.roles.findOne({ where: { name: dto.role } });
-    if (!role) throw new NotFoundException(`Role "${dto.role}" does not exist`);
+    const role = await this.roles.findOneBy({ id: dto.roleId });
+    if (!role) throw new NotFoundException(`Role ${dto.roleId} does not exist`);
 
     const ability = this.abilityFactory.createForUser(actor);
     const candidate = subject('User', {
