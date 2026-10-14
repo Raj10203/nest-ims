@@ -9,13 +9,20 @@ const USER_CRUD: PermissionDef[] = [
   ['delete', 'User'],
 ];
 
+const SITE_CRUD: PermissionDef[] = [
+  ['create', 'Site'],
+  ['read', 'Site'],
+  ['update', 'Site'],
+  ['delete', 'Site'],
+];
+
 // Single source of truth for what each role may do. The seeder makes the
 // database match this exactly (adds missing rows, removes stale ones).
 // Hierarchy limits (who can touch whom) are applied by CaslAbilityFactory.
 export const ROLE_PERMISSIONS: Record<RoleName, PermissionDef[]> = {
   [RoleName.SUPER_ADMIN]: [['manage', 'all']],
-  [RoleName.ADMIN]: USER_CRUD,
-  [RoleName.MANAGER]: USER_CRUD,
+  [RoleName.ADMIN]: [...USER_CRUD, ...SITE_CRUD],
+  [RoleName.MANAGER]: [...USER_CRUD, ...SITE_CRUD],
   [RoleName.SITE_INCHARGE]: USER_CRUD,
   [RoleName.SITE_TECHNICIAN]: [['read', 'User']],
 };

@@ -6,6 +6,7 @@ import { dataSourceOptions } from './database/data-source.js';
 import { HealthController } from './health.controller.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { AuthorizationModule } from './modules/authorization/authorization.module.js';
+import { SitesModule } from './modules/sites/sites.module.js';
 import { UsersModule } from './modules/users/users.module.js';
 
 @Module({
@@ -13,6 +14,7 @@ import { UsersModule } from './modules/users/users.module.js';
     TypeOrmModule.forRoot(dataSourceOptions),
     AuthorizationModule,
     UsersModule,
+    SitesModule,
     AuthModule,
   ],
   controllers: [HealthController],
