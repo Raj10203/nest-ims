@@ -10,6 +10,10 @@ const appEnvSchema = dbEnvSchema.extend({
   JWT_ACCESS_EXPIRES_IN: z.string().min(1),
   JWT_REFRESH_SECRET: z.string().min(32),
   JWT_REFRESH_EXPIRES_IN: z.string().min(1),
+  LOG_LEVEL: z
+    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
+    .optional(),
+  LOG_FILE: z.string().min(1).optional(),
 });
 
 export const env = parseEnv(appEnvSchema);

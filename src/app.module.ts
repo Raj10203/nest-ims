@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_PIPE } from '@nestjs/core';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { AppLoggerModule } from './common/logger/app-logger.module.js';
 import { ZodValidationPipe } from './common/zod/zod-validation.pipe.js';
 import { dataSourceOptions } from './database/data-source.js';
 import { HealthController } from './health.controller.js';
@@ -12,6 +13,7 @@ import { UsersModule } from './modules/users/users.module.js';
 
 @Module({
   imports: [
+    AppLoggerModule,
     TypeOrmModule.forRoot(dataSourceOptions),
     AuthorizationModule,
     UsersModule,

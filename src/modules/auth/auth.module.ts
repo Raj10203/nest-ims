@@ -7,8 +7,6 @@ import { AuthService } from './auth.service.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 
 @Module({
-  // Secrets and expiry are passed per call in AuthService / JwtAuthGuard
-  // because access and refresh tokens use different ones.
   imports: [JwtModule.register({}), UsersModule],
   controllers: [AuthController],
   providers: [AuthService, { provide: APP_GUARD, useClass: JwtAuthGuard }],
