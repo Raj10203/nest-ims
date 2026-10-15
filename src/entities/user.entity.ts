@@ -22,6 +22,15 @@ export class User extends BaseEntity {
   @Column({ length: 255, select: false })
   password: string;
 
+  @Column({ type: 'varchar', length: 255, nullable: true, select: false })
+  emailOtpHash: string | null;
+
+  @Column({ type: 'timestamp', nullable: true, select: false })
+  emailOtpExpiresAt: Date | null;
+
+  @Column({ type: 'int', default: 0, select: false })
+  emailOtpAttempts: number;
+
   // Hash of the latest issued refresh token; null when logged out.
   @Column({ type: 'varchar', length: 255, nullable: true, select: false })
   refreshTokenHash: string | null;

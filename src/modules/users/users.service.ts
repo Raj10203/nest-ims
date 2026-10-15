@@ -8,12 +8,12 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { hashSecret } from '../../common/security/secret-hash.js';
-import { Role } from '../../entities/role.entity.js';
 import { User } from '../../entities/user.entity.js';
 import {
   CaslAbilityFactory,
   readableUsersWhere,
 } from '../authorization/casl-ability.factory.js';
+import { RolesService } from '../roles/roles.service.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
@@ -22,12 +22,12 @@ import { UpdateUserDto } from './dto/update-user.dto.js';
 export class UsersService {
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
-    @InjectRepository(Role) private readonly roles: Repository<Role>,
+    private readonly roles: RolesService,
     private readonly abilityFactory: CaslAbilityFactory,
   ) {}
 
   async create(actor: User, dto: CreateUserDto): Promise<User> {
-    const role = await this.roles.findOneBy({ id: dto.roleId });
+    const role = await this.roles.findById(dto.roleId);
     if (!role) throw new NotFoundException(`Role ${dto.roleId} does not exist`);
 
     const ability = this.abilityFactory.createForUser(actor);
@@ -89,6 +89,9 @@ export class UsersService {
     const { password, ...rest } = dto;
     await this.users.update(id, {
       ...rest,
+      ...(dto.email && dto.email !== target.email
+        ? { emailVerifiedAt: null }
+        : {}),
       ...(password ? { password: await hashSecret(password) } : {}),
     });
     return this.findOneOrFail(id);
@@ -127,8 +130,6 @@ export class UsersService {
     await this.users.update(id, { refreshTokenHash: hash });
   }
 
-  // --- helpers ---
-
   private async findOneOrFail(id: number): Promise<User> {
     const user = await this.findById(id);
     if (!user) throw new NotFoundException(`User ${id} not found`);
@@ -138,7 +139,7 @@ export class UsersService {
   private assertCan(actor: User, action: string, target: User): void {
     const ability = this.abilityFactory.createForUser(actor);
     if (!ability.can(action, subject('User', target))) {
-      // Same response as a missing user so ids outside the actor's scope are not revealed.
+      // Same as a missing user, so ids outside the actor's scope are not revealed.
       throw new NotFoundException(`User ${target.id} not found`);
     }
   }

@@ -7,6 +7,6 @@ export class HealthController {
   @Public()
   @Get()
   check() {
-    return { status: 'ok done seen' };
+    return { status: 'ok' };
   }
 }

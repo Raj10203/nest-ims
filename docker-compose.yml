@@ -9,14 +9,24 @@ services:
     volumes:
       - ./:/app
     environment:
+      NODE_ENV: development
       DB_HOST: mysql
       DB_PORT: 3306
       DB_NAME: nest_ims
       DB_USER: user
       DB_PASSWORD: password
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+      MAIL_FROM: IMS <no-reply@ims.local>
     depends_on:
       mysql:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
 
   mysql:
     image: mysql:8.0.44
@@ -36,5 +46,26 @@ services:
       timeout: 5s
       retries: 20
 
+  redis:
+    image: redis:7-alpine
+    container_name: nest_ims_redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:v1.21
+    container_name: nest_ims_mailpit
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # web UI
+
 volumes:
   mysql_data:
+  redis_data:
