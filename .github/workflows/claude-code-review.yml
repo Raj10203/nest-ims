@@ -1,0 +1,69 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# A new push to the same PR cancels the review still running for the old commit.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request. Read CLAUDE.md first: it holds the project rules
+            (ESM .js imports, zod DTOs, two-layer CASL authorization with 404 for
+            out-of-scope records, migrations for every schema change, comment style).
+
+            Get the changes with `gh pr diff ${{ github.event.pull_request.number }}` and
+            read the surrounding code when you need context. Review only the changed lines.
+
+            Look for, in this order:
+            1. Bugs and wrong behaviour (logic, edge cases, unawaited promises).
+            2. Security (auth or permission gaps, injection, secrets, data leaks in logs).
+            3. Breaking changes (API contract, migrations that are not backward compatible).
+            4. Missing tests for new behaviour.
+            5. Breaks of the CLAUDE.md rules.
+
+            Only report real problems you can point to in the diff. No style nitpicks that
+            Prettier or oxlint already catch, no praise, no summary of what the PR does.
+
+            Post the result as ONE comment with
+            `gh pr comment ${{ github.event.pull_request.number }} --body "..."`, in this form:
+
+            ## Claude review
+            **Risk:** low | medium | high
+
+            ### High
+            - `path/file.ts:line` problem, why it matters, suggested fix.
+            ### Medium
+            - ...
+            ### Low
+            - ...
+
+            Leave out empty sections. If nothing is wrong, post "## Claude review\nNo issues found."
+          claude_args: |
+            --model claude-sonnet-5-5
+            --max-turns 30
+            --allowedTools "Read,Grep,Glob,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
