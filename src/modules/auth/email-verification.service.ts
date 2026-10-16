@@ -50,12 +50,13 @@ export class EmailVerificationService {
       otp = generateOtp();
     }
 
+    const emailOtpHash = await hashSecret(otp);
     // The UPDATE repeats the cooldown check, so concurrent sends cannot all pass it.
     const { affected } = await this.users
       .createQueryBuilder()
       .update(User)
       .set({
-        emailOtpHash: await hashSecret(otp),
+        emailOtpHash,
         emailOtpExpiresAt: new Date(now + OTP_TTL_MINUTES * 60_000),
         emailOtpAttempts: 0,
       })
@@ -74,13 +75,13 @@ export class EmailVerificationService {
         expiresInMinutes: OTP_TTL_MINUTES,
       });
     } catch (error) {
-      // The new code was never sent: put the previous one back, so it stays valid
-      // and the user can retry at once instead of waiting out the cooldown.
-      await this.users.update(user.id, {
-        emailOtpHash: previous?.emailOtpHash ?? null,
-        emailOtpExpiresAt: previous?.emailOtpExpiresAt ?? null,
-        emailOtpAttempts: previous?.emailOtpAttempts ?? 0,
-      });
+      // The broker may have taken the message anyway (a confirm timeout), so keep
+      // the new code valid and only lift the cooldown, letting the user retry at
+      // once. Matching the hash leaves a newer code from another request alone.
+      await this.users.update(
+        { id: user.id, emailOtpHash },
+        { emailOtpExpiresAt: cooldownCutoff },
+      );
       throw error;
     }
   }

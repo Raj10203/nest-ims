@@ -74,16 +74,20 @@ describe('EmailVerificationService', () => {
     expect(jobs.publish).not.toHaveBeenCalled();
   });
 
-  it('restores the previous code when the mail job cannot be queued', async () => {
-    const previous = {
-      emailOtpHash: await hashSecret('111111'),
-      emailOtpExpiresAt: new Date(Date.now() + 60_000),
-      emailOtpAttempts: 2,
-    };
-    const { service, jobs, update } = setup(previous);
+  it('lifts the cooldown on its own code only when the mail job cannot be queued', async () => {
+    const { service, jobs, update, qb } = setup();
     jobs.publish.mockRejectedValue(new Error('broker down'));
     await expect(service.sendOtp(user)).rejects.toThrow('broker down');
-    expect(update).toHaveBeenCalledWith(user.id, previous);
+
+    const { emailOtpHash, emailOtpExpiresAt } = qb.set.mock.calls[0][0];
+    const [where, changes] = update.mock.calls[0];
+    expect(where).toEqual({ id: user.id, emailOtpHash });
+    expect(Object.keys(changes)).toEqual(['emailOtpExpiresAt']);
+    // Still valid, but already past the cooldown.
+    expect(changes.emailOtpExpiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(changes.emailOtpExpiresAt.getTime()).toBeLessThan(
+      emailOtpExpiresAt.getTime(),
+    );
   });
 
   it('allows a resend after the cooldown', async () => {

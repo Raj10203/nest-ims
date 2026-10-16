@@ -1,13 +1,13 @@
 import { Injectable } from '@nestjs/common';
-import { OTP_TTL_MINUTES } from '../../common/otp.constants.js';
 import type { JobHandler, JobPayloads } from '../jobs/job.types.js';
 import { MailService } from './mail.service.js';
 
 @Injectable()
 export class SendEmailOtpHandler implements JobHandler<'mail.send-email-otp'> {
   readonly type = 'mail.send-email-otp';
-  // The code is useless once it expires, so do not keep it any longer.
-  readonly deadLetterTtlMs = OTP_TTL_MINUTES * 60_000;
+  // Long enough to look into a failed send; the code itself expires after
+  // OTP_TTL_MINUTES, so keeping the job does not keep a usable secret.
+  readonly deadLetterTtlMs = 24 * 60 * 60 * 1000;
 
   constructor(private readonly mail: MailService) {}
 
