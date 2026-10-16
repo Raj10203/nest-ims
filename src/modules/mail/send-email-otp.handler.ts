@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { OTP_TTL_MINUTES } from '../auth/email-verification.service.js';
+import { OTP_TTL_MINUTES } from '../../common/otp.constants.js';
 import type { JobHandler, JobPayloads } from '../jobs/job.types.js';
 import { MailService } from './mail.service.js';
 

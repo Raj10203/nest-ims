@@ -1,27 +1,20 @@
 import {
   BadRequestException,
   ConflictException,
-  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { hashSecret } from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
-import {
-  EmailVerificationService,
-  OTP_MAX_ATTEMPTS,
-  OTP_RESEND_COOLDOWN_SECONDS,
-  OTP_TTL_MINUTES,
-} from './email-verification.service.js';
+import { OTP_MAX_ATTEMPTS } from '../../common/otp.constants.js';
+import { EmailVerificationService } from './email-verification.service.js';
 
-function setup(state: Partial<User> | null = null) {
+// `updated` is what the conditional UPDATE in sendOtp reports: false means
+// another request claimed the cooldown first.
+function setup(state: Partial<User> | null = null, { updated = true } = {}) {
   const update = vi.fn().mockResolvedValue(undefined);
   const increment = vi.fn().mockResolvedValue({
     affected: (state?.emailOtpAttempts ?? 0) < OTP_MAX_ATTEMPTS ? 1 : 0,
   });
-  // Mirrors the conditional UPDATE in sendOtp: it matches only when no code
-  // was sent within the cooldown.
-  const cutoff =
-    Date.now() + OTP_TTL_MINUTES * 60_000 - OTP_RESEND_COOLDOWN_SECONDS * 1000;
-  const inCooldown = (state?.emailOtpExpiresAt?.getTime() ?? 0) > cutoff;
   const qb = {
     addSelect: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
@@ -29,7 +22,7 @@ function setup(state: Partial<User> | null = null) {
     update: vi.fn().mockReturnThis(),
     set: vi.fn().mockReturnThis(),
     getOne: vi.fn().mockResolvedValue(state),
-    execute: vi.fn().mockResolvedValue({ affected: inCooldown ? 0 : 1 }),
+    execute: vi.fn().mockResolvedValue({ affected: updated ? 1 : 0 }),
   };
   const users = { update, increment, createQueryBuilder: () => qb };
   const jobs = { publish: vi.fn().mockResolvedValue(undefined) };
@@ -62,12 +55,35 @@ describe('EmailVerificationService', () => {
     expect(sent).not.toContain('000000');
   });
 
-  it('rejects a resend inside the cooldown and publishes nothing', async () => {
-    const { service, jobs } = setup({
+  it('rejects a resend inside the cooldown with 429 before writing anything', async () => {
+    const { service, jobs, qb } = setup({
       emailOtpExpiresAt: new Date(Date.now() + 9.5 * 60_000),
     });
-    await expect(service.sendOtp(user)).rejects.toThrow(HttpException);
+    await expect(service.sendOtp(user)).rejects.toMatchObject({
+      status: HttpStatus.TOO_MANY_REQUESTS,
+    });
+    expect(qb.execute).not.toHaveBeenCalled();
     expect(jobs.publish).not.toHaveBeenCalled();
+  });
+
+  it('answers 429 and publishes nothing when a concurrent send wins the UPDATE', async () => {
+    const { service, jobs } = setup(null, { updated: false });
+    await expect(service.sendOtp(user)).rejects.toMatchObject({
+      status: HttpStatus.TOO_MANY_REQUESTS,
+    });
+    expect(jobs.publish).not.toHaveBeenCalled();
+  });
+
+  it('restores the previous code when the mail job cannot be queued', async () => {
+    const previous = {
+      emailOtpHash: await hashSecret('111111'),
+      emailOtpExpiresAt: new Date(Date.now() + 60_000),
+      emailOtpAttempts: 2,
+    };
+    const { service, jobs, update } = setup(previous);
+    jobs.publish.mockRejectedValue(new Error('broker down'));
+    await expect(service.sendOtp(user)).rejects.toThrow('broker down');
+    expect(update).toHaveBeenCalledWith(user.id, previous);
   });
 
   it('allows a resend after the cooldown', async () => {
