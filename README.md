@@ -1,124 +1,299 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# IMS API: Inventory Management System backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A NestJS REST API with role-based access control, email verification and background jobs.
+This README doubles as the software design write-up: how it is built, how it runs in development, and how it is shipped to production.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+**Stack:** NestJS 12 · TypeORM 1.x · MySQL 8 · RabbitMQ · JWT · CASL · zod · Vitest · Docker · GitHub Actions · Azure DevOps
 
-## Description
+---
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## 1. Software design
 
-## Project setup
+### 1.1 System overview
 
-```bash
-$ npm install
+```mermaid
+flowchart LR
+    Client([Client / Postman]) -->|HTTPS /api| API[NestJS API]
+    API -->|TypeORM| DB[(MySQL 8)]
+    API -->|publish job| MQ{{RabbitMQ<br/>queue: jobs}}
+    MQ -->|consume| Worker[Worker process<br/>dedicated server in prod]
+    Worker -->|SMTP| Mail[Mail server<br/>Mailpit in dev / Google SMTP in prod]
+    Worker -.->|failed 4x| Dead[(jobs.dead)]
 ```
 
-## Compile and run the project
+- The **API** handles HTTP only. Anything slow or unreliable (sending email) is published to RabbitMQ and returns immediately.
+- The **worker** is the same codebase started with a different entry point (`src/worker.ts`). It consumes the queue and runs the handler for each job type.
+- Both processes are stateless, so either can be scaled horizontally.
 
-```bash
-# development
-$ npm run start
+### 1.2 Code structure
 
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+```
+src/
+  main.ts / app.setup.ts     API entry point, global prefix /api, shutdown hooks
+  worker.ts                  worker entry point (no HTTP server)
+  cli/                       nest-commander commands (seed)
+  config/                    zod-validated env, split by who needs it (db / api / rabbitmq / mail / seed)
+  entities/                  TypeORM entities, one per table, all extend BaseEntity
+  database/                  data source, migrations/, seeds/
+  common/                    zod pipe + DTO helper, pino request logger with secret masking, enums, scrypt hashing
+  modules/
+    auth/                    login, refresh, logout, me, email OTP
+    authorization/           CASL ability factory + policies guard
+    users/  sites/  roles/   feature modules (controller, service, dto, specs)
+    jobs/                    RabbitMQ publisher, consumer, retry topology
+    mail/                    nodemailer + the "send email OTP" job handler
 ```
 
-## Run tests
+Each feature keeps its module, controller, service, DTOs and tests together; entities live in one shared folder.
 
-```bash
-# unit tests
-$ npm run test
+### 1.3 Authentication
 
-# e2e tests
-$ npm run test:e2e
+- Email + password login returns a short-lived **access token** and a long-lived **refresh token** (separate secrets and expiries).
+- The refresh token is **rotated on every use** and stored only as a scrypt hash (`users.refreshTokenHash`). Logout clears it.
+- `JwtAuthGuard` is global: every route needs a bearer token unless marked `@Public()`. It loads the user on each request, so role changes apply immediately.
+- Passwords are hashed with Node's built-in scrypt; `password` and `refreshTokenHash` are `select: false`.
 
-# test coverage
-$ npm run test:cov
+### 1.4 Email verification (OTP)
+
+- A user who has not verified their email can log in, but every other route returns 403 (except `me`, `logout` and the OTP routes).
+- `POST /api/auth/email-otp/send` generates a 6-digit OTP, stores **only its hash** with a 10-minute expiry and a 5-attempt limit, and publishes a mail job.
+- `POST /api/auth/email-otp/verify` checks it and sets `emailVerifiedAt`.
+- Changing a user's email resets verification.
+
+### 1.5 Authorization (RBAC with CASL)
+
+Five roles in a strict hierarchy:
+
+| Role | Level | Notes |
+| --- | --- | --- |
+| `super_admin` | 100 | `manage all`; only role that can create admins |
+| `admin` | 80 | manages all lower-level users |
+| `manager` | 60 | manages users it created |
+| `site_incharge` | 40 | manages users it created |
+| `site_technician` | 20 | read-only |
+
+- A user can only manage users with a **strictly lower level**; everyone except `admin` can only manage accounts they created.
+- **Permissions are data, scoping is code.** `src/database/seeds/role-permissions.ts` is the single source of truth for `(action, subject)` pairs and is synced into the DB by the seed command. `CaslAbilityFactory` adds the hierarchy and ownership conditions.
+- **Two layers:** `@CheckAbility()` + `PoliciesGuard` answer "may this role do this at all"; the service then checks the specific record. Out-of-scope records return **404, not 403**, so ids are not revealed.
+
+### 1.6 Background jobs (RabbitMQ)
+
+```mermaid
+flowchart LR
+    API -->|publish, confirmed| J[jobs]
+    J --> W[Worker]
+    W -->|fail| R1[jobs.retry.5000ms]
+    R1 -->|TTL, dead-letter back| J
+    W -->|fail| R2[jobs.retry.30000ms]
+    R2 --> J
+    W -->|fail| R3[jobs.retry.300000ms]
+    R3 --> J
+    W -->|4th failure, unknown type, malformed| D[(jobs.dead<br/>x-last-error)]
 ```
 
-## Deployment
+- One queue carries every job type as an envelope `{ id, type, payload }`; the handler is looked up by `type`.
+- Messages are **acked only after the handler finishes** (at-least-once), so handlers must be idempotent.
+- Retries use TTL queues with delays of 5 s, 30 s and 5 min (4 attempts in total), then the message lands in `jobs.dead` with the last error for manual replay.
+- Queues are **quorum queues** (replicated, durable). Any number of workers can run safely; RabbitMQ gives each message to one consumer.
+- Adding a job: add its payload type, write a handler, register it in `JobsWorkerModule`.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+### 1.7 Cross-cutting concerns
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+- **Validation:** zod everywhere (env at startup, request bodies/queries via a global pipe). Invalid config crashes the app at boot, naming the variable.
+- **Logging:** pino-http. Every line has method, url, status, time, `userId` and `role`. Bodies are logged only in development (or opt-in in production); any field named like password/secret/token/otp/hash/authorization is masked at any depth.
+- **Database:** `synchronize` is off. Every schema change is a reviewed migration and must stay backward compatible, because the old version keeps serving while the new schema is applied.
+- **Caching:** the roles list is cached in memory for an hour.
+- **Graceful shutdown:** `enableShutdownHooks()` so `docker stop` is instant instead of waiting for SIGKILL.
+
+### 1.8 API surface
+
+All routes are under `/api`, except `GET /health`.
+
+| Area | Routes |
+| --- | --- |
+| Auth | `POST /auth/login`, `/auth/refresh`, `/auth/logout`, `GET /auth/me`, `POST /auth/email-otp/send`, `/auth/email-otp/verify` |
+| Users | `POST/GET /users`, `GET/PATCH/DELETE /users/:id` |
+| Sites | `POST/GET /sites`, `GET/PATCH/DELETE /sites/:id` |
+| Roles | `GET /roles` |
+
+---
+
+## 2. Development (Docker only)
+
+Everything runs in containers; you do not need Node or MySQL on your machine.
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+cp .env.example .env
+docker compose up
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+That single command starts the whole stack:
 
-## Observability
+| Service | What it is | Host access |
+| --- | --- | --- |
+| `app` | NestJS API in watch mode (source is bind-mounted, installs dependencies itself) | http://localhost:3001 (`/api/...`, `/health`) |
+| `worker` | Background job consumer in watch mode | none |
+| `mysql` | MySQL 8 | `localhost:3308` |
+| `rabbitmq` | Broker + management UI | UI http://localhost:15672 (`ims` / `ims`), AMQP `:5672` |
+| `mailpit` | Fake SMTP server that catches every email | inbox http://localhost:8025 |
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
+Emails (including verification OTPs) never leave your machine: open the Mailpit inbox to read them.
 
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
+### Migrations and seeding (via `docker compose exec`)
 
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-To add it to this project:
+`synchronize` is off, and the TypeORM CLI needs the **compiled** data source, so build first and re-build after changing entities or migrations.
 
 ```bash
-$ npm install @nestjs/observe
+# 1. compile
+docker compose exec app npx nest build
+
+# 2. generate a migration from entity changes (review the file it creates!)
+docker compose exec app npx typeorm migration:generate -d dist/database/data-source.js src/database/migrations/<Name>
+
+# empty migration instead
+docker compose exec app npx typeorm migration:create src/database/migrations/<Name>
+
+# 3. run / inspect / undo
+docker compose exec app npx typeorm migration:run    -d dist/database/data-source.js
+docker compose exec app npx typeorm migration:show   -d dist/database/data-source.js
+docker compose exec app npx typeorm migration:revert -d dist/database/data-source.js
+
+# 4. seed roles, permissions and the first super admin (idempotent)
+docker compose exec app node dist/cli/cli.js seed            # add --dry-run to preview
 ```
 
-Then follow the [setup guide](https://docs.nestjs.com/observability/overview) - it takes a single import and an app key.
+First-time setup is therefore: `docker compose up`, then build, `migration:run`, `seed`. Log in with the `SEED_SUPER_ADMIN_*` values from `.env`.
 
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
+### Tests, lint, format
 
-## Resources
+```bash
+docker compose exec app npm test            # unit tests
+docker compose exec app npm run test:e2e    # e2e tests
+docker compose exec app npm run lint        # oxlint
+docker compose exec app npm run format      # prettier
+```
 
-Check out a few resources that may come in handy when working with NestJS:
+---
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+## 3. Production
 
-## Support
+### 3.1 Topology
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+```mermaid
+flowchart TB
+    subgraph GH[GitHub]
+        PR[Pull request] -->|ready for review| CR[Claude review action]
+        M[Push to master] --> BUILD[GitHub Action:<br/>build + push image]
+    end
+    BUILD --> HUB[(Docker Hub<br/>nest-ims:sha + latest)]
+    BUILD -->|trigger run with imageTag| AZ[Azure DevOps pipeline<br/>CD]
+    AZ -->|SSH| VM[Azure VM]
+    HUB -->|docker pull| VM
+    subgraph VM[Azure VM]
+        API[API container]
+    end
+    subgraph WS[Dedicated worker server]
+        WK[Worker container]
+    end
+    API --> DB[(Managed MySQL<br/>TLS)]
+    API --> MQ{{RabbitMQ<br/>amqps}}
+    WK --> MQ
+    WK --> G[Google SMTP<br/>smtp.gmail.com]
+```
 
-## Stay in touch
+The same image runs every role; only the command changes:
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+| Role | Command |
+| --- | --- |
+| API | `node dist/main.js` (default) |
+| Worker | `node dist/worker.js` |
+| Migrations | `node node_modules/typeorm/cli.js migration:run -d dist/database/data-source.js` (or `npm run migration`) |
+| Seed | `node dist/cli/cli.js seed` |
 
-## License
+### 3.2 Production services
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- **Mail:** a real SMTP provider, Google (`smtp.gmail.com`, port 465 with `MAIL_SECURE=true`, an app password in `MAIL_USER` / `MAIL_PASSWORD`). Only the worker needs the `MAIL_*` settings.
+- **RabbitMQ:** a real broker with its own credentials, reached over TLS (`amqps://` in `RABBITMQ_URL`). Both the API and the worker need the URL.
+- **Dedicated worker server:** the worker runs on its own machine, so slow or failing mail jobs never steal CPU or memory from the API. Because RabbitMQ delivers each message to exactly one consumer, more workers can be added without coordination.
+- **Database:** MySQL with `DB_SSL=true` (and optional `DB_SSL_CA`).
+- **Configuration:** environment variables only. No `.env`, `node_modules` or `dist` is ever copied into the image, and the container refuses to start if a variable is missing.
+
+### 3.3 The production image
+
+Multi-stage `Dockerfile`:
+
+1. **build**: `npm ci` and compile TypeScript.
+2. **prod-deps**: `npm ci --omit=dev` (this keeps the TypeORM CLI, needed for migrations).
+3. **runtime**: compiled `dist/` + production `node_modules` only, runs as the non-root `node` user, with a `HEALTHCHECK` on `/health`.
+
+### 3.4 CI/CD pipeline
+
+```mermaid
+sequenceDiagram
+    actor Dev
+    participant GH as GitHub
+    participant Claude as Claude review (GitHub Action)
+    participant Hub as Docker Hub
+    participant AZ as Azure DevOps
+    participant VM as Azure VM
+
+    Dev->>GH: Open PR / mark ready for review
+    GH->>Claude: pull_request (not draft)
+    Claude->>GH: Review comment: issues, merge notes, verdict
+    Dev->>GH: Merge to master
+    GH->>Hub: Build image, push :sha and :latest
+    GH->>AZ: Start pipeline with imageTag = commit sha
+    AZ->>VM: SSH: run deploy script with the new image
+    VM->>Hub: Pull image
+    VM->>VM: Run migrations, then start new container
+```
+
+**1. Pull request review (`.github/workflows/claude-code-review.yml`)**
+- Runs on every PR that is **ready for review** (not drafts), and again on every new push to that PR; a newer push cancels the review still running.
+- Docs, CI files and lockfile-only changes are skipped.
+- Claude reads `CLAUDE.md` and the PR description, reviews the **whole diff** and posts one comment: issues bucketed as Critical / Important / Minor, merge notes (migrations, env vars, restarts) and a verdict (✅ mergeable, ⚠️ mergeable with fixes, ❌ not mergeable).
+- It is **read-only** (no checkout, commit or edits) and tuned to avoid noise: "No issues found" is a normal result.
+
+**2. Build and push (`.github/workflows/ci-cd.yml`)**
+- Runs on every push to `master`.
+- Builds the production image and pushes it to Docker Hub tagged with both the commit SHA (immutable, used for deploys and rollbacks) and `latest`.
+
+**3. Continuous delivery (`azure-pipelines.yml`)**
+- Started from GitHub with the commit SHA as the `imageTag` parameter (manual trigger only, no CI trigger of its own).
+- Runs on a self-hosted agent pool and connects to the Azure VM over SSH.
+- The VM deploy script pulls `<dockerhub-user>/nest-ims:<sha>`, **runs the migrations**, then replaces the running container with the new image.
+- Because migrations are backward compatible, the old container keeps serving while the schema changes.
+
+> Status: the hand-off from GitHub to Azure DevOps (last step in `ci-cd.yml`) and the Azure pipeline steps are currently commented out in the repository while the VM is being finalised. The deploy script itself lives on the VM, not in this repo. Rollback = re-run the Azure pipeline with an older commit SHA as `imageTag`.
+
+**Required secrets**
+
+| Where | Secret |
+| --- | --- |
+| GitHub | `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `AZDO_ORG`, `AZDO_PROJECT`, `AZDO_PIPELINE_ID`, `AZDO_PAT` |
+| Azure DevOps | SSH service connection to the VM |
+| VM / worker server | all runtime env vars (`DB_*`, `JWT_*`, `RABBITMQ_URL`, `MAIL_*`, `SEED_SUPER_ADMIN_*`) |
+
+### 3.5 First deploy checklist
+
+1. Provision MySQL, RabbitMQ, the API VM and the worker server; set environment variables on both servers.
+2. Run migrations, then `seed` once (creates roles, permissions and the first super admin).
+3. Start the API container on the VM and the worker container on the worker server.
+4. Verify `GET /health`, then log in and complete email OTP verification to confirm the whole chain (API → RabbitMQ → worker → Google SMTP).
+5. Watch `jobs.dead` in the RabbitMQ management UI for failed jobs.
+
+---
+
+## 4. Design decisions at a glance
+
+| Decision | Why |
+| --- | --- |
+| Queue + separate worker for email | Keeps API latency low, survives SMTP outages through retries |
+| Quorum queues, ack after handler | No lost jobs on broker or worker restart (at-least-once, idempotent handlers) |
+| Permissions in DB, scoping in code | Change role capabilities with a seed; keep hierarchy rules type-checked and tested |
+| 404 instead of 403 for out-of-scope records | Does not reveal which ids exist |
+| Hashed refresh tokens and OTPs | A database leak does not expose usable credentials |
+| zod for env and requests | One validation library; bad config fails at boot, not at runtime |
+| Migrations only, backward compatible | Zero-downtime deploys; old version keeps working during schema change |
+| One image, many commands | Same artifact for API, worker, migrations and seed; SHA-tagged for rollback |
+| Docker-only development | Identical environment for everyone, one command to start |
