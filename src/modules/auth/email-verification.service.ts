@@ -28,15 +28,6 @@ export class EmailVerificationService {
     this.assertNotVerified(user);
 
     const previous = await this.loadOtpState(user.id);
-    const sentAt = previous?.emailOtpExpiresAt
-      ? previous.emailOtpExpiresAt.getTime() - OTP_TTL_MINUTES * 60_000
-      : null;
-    if (sentAt && Date.now() - sentAt < OTP_RESEND_COOLDOWN_SECONDS * 1000) {
-      throw new HttpException(
-        `Wait ${OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code`,
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
     let otp = generateOtp();
     while (
       previous?.emailOtpHash &&
@@ -45,11 +36,32 @@ export class EmailVerificationService {
       otp = generateOtp();
     }
 
-    await this.users.update(user.id, {
-      emailOtpHash: await hashSecret(otp),
-      emailOtpExpiresAt: new Date(Date.now() + OTP_TTL_MINUTES * 60_000),
-      emailOtpAttempts: 0,
-    });
+    // One conditional UPDATE, so concurrent sends cannot all pass the cooldown.
+    // A code sent within the cooldown expires after this cutoff.
+    const now = Date.now();
+    const cooldownCutoff = new Date(
+      now + OTP_TTL_MINUTES * 60_000 - OTP_RESEND_COOLDOWN_SECONDS * 1000,
+    );
+    const { affected } = await this.users
+      .createQueryBuilder()
+      .update(User)
+      .set({
+        emailOtpHash: await hashSecret(otp),
+        emailOtpExpiresAt: new Date(now + OTP_TTL_MINUTES * 60_000),
+        emailOtpAttempts: 0,
+      })
+      .where('id = :id', { id: user.id })
+      .andWhere(
+        '(emailOtpExpiresAt IS NULL OR emailOtpExpiresAt <= :cooldownCutoff)',
+        { cooldownCutoff },
+      )
+      .execute();
+    if (!affected) {
+      throw new HttpException(
+        `Wait ${OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
     await this.jobs.publish('mail.send-email-otp', {
       to: user.email,
       otp,

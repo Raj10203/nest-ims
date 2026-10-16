@@ -3,6 +3,13 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+    # Docs, CI files and lockfile-only pushes do not trigger a review.
+    paths-ignore:
+      - '**.md'
+      - '.github/**'
+      - '.claude/**'
+      - 'azure-pipelines.yml'
+      - 'package-lock.json'
 
 # A new push to the same PR cancels the review still running for the old commit.
 concurrency:
@@ -46,14 +53,19 @@ jobs:
             4. Missing tests for new behaviour.
             5. Breaks of the CLAUDE.md rules.
 
-            Only report real problems you can point to in the diff. No style nitpicks that
-            Prettier or oxlint already catch, no praise, no summary of what the PR does.
+            Only report problems you are confident about and can point to in the diff:
+            at most 8 findings, most severe first. No style nitpicks that Prettier or
+            oxlint catch, no praise, no summary of what the PR does. Skip commented-out
+            or CI/deploy config unless it breaks the build. Do not repeat anything the
+            PR description already lists as a known or intended change.
 
-            Post the result as ONE comment with
-            `gh pr comment ${{ github.event.pull_request.number }} --body "..."`, in this form:
+            Post ONE comment and keep it updated: run
+            `gh pr comment ${{ github.event.pull_request.number }} --edit-last --body "..."`
+            and, only if that fails because there is no earlier comment, run the same
+            command without `--edit-last`. Use this form:
 
             ## Claude review
-            **Risk:** low | medium | high
+            **Risk:** low | medium | high · reviewed `${{ github.event.pull_request.head.sha }}`
 
             ### High
             - `path/file.ts:line` problem, why it matters, suggested fix.
@@ -62,7 +74,8 @@ jobs:
             ### Low
             - ...
 
-            Leave out empty sections. If nothing is wrong, post "## Claude review\nNo issues found."
+            Leave out empty sections. If nothing is wrong, the body is
+            "## Claude review" followed by "No issues found."
           claude_args: |
             --model claude-sonnet-5-5
             --max-turns 30

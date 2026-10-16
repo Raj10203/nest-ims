@@ -8,6 +8,8 @@ import { User } from '../../entities/user.entity.js';
 import {
   EmailVerificationService,
   OTP_MAX_ATTEMPTS,
+  OTP_RESEND_COOLDOWN_SECONDS,
+  OTP_TTL_MINUTES,
 } from './email-verification.service.js';
 
 function setup(state: Partial<User> | null = null) {
@@ -15,29 +17,38 @@ function setup(state: Partial<User> | null = null) {
   const increment = vi.fn().mockResolvedValue({
     affected: (state?.emailOtpAttempts ?? 0) < OTP_MAX_ATTEMPTS ? 1 : 0,
   });
+  // Mirrors the conditional UPDATE in sendOtp: it matches only when no code
+  // was sent within the cooldown.
+  const cutoff =
+    Date.now() + OTP_TTL_MINUTES * 60_000 - OTP_RESEND_COOLDOWN_SECONDS * 1000;
+  const inCooldown = (state?.emailOtpExpiresAt?.getTime() ?? 0) > cutoff;
   const qb = {
     addSelect: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
+    andWhere: vi.fn().mockReturnThis(),
+    update: vi.fn().mockReturnThis(),
+    set: vi.fn().mockReturnThis(),
     getOne: vi.fn().mockResolvedValue(state),
+    execute: vi.fn().mockResolvedValue({ affected: inCooldown ? 0 : 1 }),
   };
   const users = { update, increment, createQueryBuilder: () => qb };
   const jobs = { publish: vi.fn().mockResolvedValue(undefined) };
   const service = new EmailVerificationService(users as any, jobs as any);
-  return { service, update, increment, jobs };
+  return { service, update, increment, jobs, qb };
 }
 
 const user = { id: 1, email: 'a@example.com', emailVerifiedAt: null } as User;
 
 describe('EmailVerificationService', () => {
   it('stores a hashed OTP and publishes exactly one mail job', async () => {
-    const { service, update, jobs } = setup();
+    const { service, qb, jobs } = setup();
     await service.sendOtp(user);
 
     expect(jobs.publish).toHaveBeenCalledTimes(1);
     const { otp, to } = jobs.publish.mock.calls[0][1];
     expect(to).toBe('a@example.com');
     expect(otp).toMatch(/^\d{6}$/);
-    const saved = update.mock.calls[0][1];
+    const saved = qb.set.mock.calls[0][0];
     expect(saved.emailOtpHash).not.toContain(otp);
     expect(saved.emailOtpAttempts).toBe(0);
   });

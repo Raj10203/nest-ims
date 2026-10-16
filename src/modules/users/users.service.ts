@@ -89,8 +89,14 @@ export class UsersService {
     const { password, ...rest } = dto;
     await this.users.update(id, {
       ...rest,
+      // A code sent to the old address must not verify the new one.
       ...(dto.email && dto.email !== target.email
-        ? { emailVerifiedAt: null }
+        ? {
+            emailVerifiedAt: null,
+            emailOtpHash: null,
+            emailOtpExpiresAt: null,
+            emailOtpAttempts: 0,
+          }
         : {}),
       ...(password ? { password: await hashSecret(password) } : {}),
     });
