@@ -3,29 +3,23 @@ services:
     image: node:24-alpine
     container_name: nest_ims_app
     working_dir: /app
-    command: sh -c "npm install && npm run start:dev"
+    command: sh -c "npm install --include=dev && npm run start:dev"
     ports:
       - "3001:3000"
     volumes:
       - ./:/app
     environment:
-      NODE_ENV: development
+      NODE_ENV: ${NODE_ENV:-development} # read from .env, so it is the only switch
       DB_HOST: mysql
       DB_PORT: 3306
       DB_NAME: nest_ims
       DB_USER: user
       DB_PASSWORD: password
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      MAIL_HOST: mailpit
-      MAIL_PORT: 1025
-      MAIL_FROM: IMS <no-reply@ims.local>
+      RABBITMQ_URL: amqp://ims:ims@rabbitmq:5672
     depends_on:
       mysql:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-      mailpit:
+      rabbitmq:
         condition: service_started
 
   mysql:
@@ -46,18 +40,38 @@ services:
       timeout: 5s
       retries: 20
 
-  redis:
-    image: redis:7-alpine
-    container_name: nest_ims_redis
-    ports:
-      - "6380:6379"
+  worker:
+    image: node:24-alpine
+    container_name: nest_ims_worker
+    working_dir: /app
+    command: npm run start:worker:dev
     volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
+      - ./:/app
+    environment:
+      NODE_ENV: ${NODE_ENV:-development} # read from .env, so it is the only switch
+      RABBITMQ_URL: amqp://ims:ims@rabbitmq:5672
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+      MAIL_FROM: IMS <no-reply@ims.local>
+    depends_on:
+      app:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+      mailpit:
+        condition: service_started
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: nest_ims_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ims
+      RABBITMQ_DEFAULT_PASS: ims
+    ports:
+      - "5672:5672" # AMQP
+      - "15672:15672" # management UI (ims / ims)
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
 
   mailpit:
     image: axllent/mailpit:v1.21
@@ -65,7 +79,9 @@ services:
     ports:
       - "1025:1025" # SMTP
       - "8025:8025" # web UI
+    healthcheck:
+      disable: true
 
 volumes:
   mysql_data:
-  redis_data:
+  rabbitmq_data:

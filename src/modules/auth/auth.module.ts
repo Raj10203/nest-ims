@@ -3,7 +3,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from '../../entities/user.entity.js';
-import { MailModule } from '../mail/mail.module.js';
+import { JobsModule } from '../jobs/jobs.module.js';
 import { UsersModule } from '../users/users.module.js';
 import { AuthController } from './auth.controller.js';
 import { EmailVerificationService } from './email-verification.service.js';
@@ -15,7 +15,7 @@ import { JwtAuthGuard } from './jwt-auth.guard.js';
     JwtModule.register({}),
     TypeOrmModule.forFeature([User]),
     UsersModule,
-    MailModule,
+    JobsModule,
   ],
   controllers: [AuthController],
   providers: [

@@ -8,7 +8,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { hashSecret, verifySecret } from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
-import { MailQueueService } from '../mail/mail-queue.service.js';
+import { JobQueueService } from '../jobs/job-queue.service.js';
 
 export const OTP_TTL_MINUTES = 10;
 export const OTP_MAX_ATTEMPTS = 5;
@@ -17,7 +17,7 @@ export const OTP_MAX_ATTEMPTS = 5;
 export class EmailVerificationService {
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
-    private readonly mailQueue: MailQueueService,
+    private readonly jobs: JobQueueService,
   ) {}
 
   // Each call replaces the stored OTP, so only the most recent one is valid.
@@ -38,7 +38,7 @@ export class EmailVerificationService {
       emailOtpExpiresAt: new Date(Date.now() + OTP_TTL_MINUTES * 60_000),
       emailOtpAttempts: 0,
     });
-    await this.mailQueue.enqueueEmailOtp({
+    await this.jobs.publish('mail.send-email-otp', {
       to: user.email,
       otp,
       expiresInMinutes: OTP_TTL_MINUTES,

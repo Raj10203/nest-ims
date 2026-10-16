@@ -18,11 +18,13 @@ export class AuthService {
   ) {}
 
   async login(email: string, password: string) {
+    //throw new exception to test logs
     const found = await this.users.findByEmailWithPassword(email);
     if (!found || !(await verifySecret(password, found.password))) {
       throw new UnauthorizedException('Invalid email or password');
     }
     const user = await this.users.findById(found.id);
+    console.error('Test exception');
     return { user, ...(await this.issueTokens(found.id)) };
   }
 

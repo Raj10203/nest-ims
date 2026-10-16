@@ -15,20 +15,20 @@ function setup(state: Partial<User> | null = null) {
     getOne: vi.fn().mockResolvedValue(state),
   };
   const users = { update, increment, createQueryBuilder: () => qb };
-  const mailQueue = { enqueueEmailOtp: vi.fn().mockResolvedValue(undefined) };
-  const service = new EmailVerificationService(users as any, mailQueue as any);
-  return { service, update, increment, mailQueue };
+  const jobs = { publish: vi.fn().mockResolvedValue(undefined) };
+  const service = new EmailVerificationService(users as any, jobs as any);
+  return { service, update, increment, jobs };
 }
 
 const user = { id: 1, email: 'a@example.com', emailVerifiedAt: null } as User;
 
 describe('EmailVerificationService', () => {
-  it('stores a hashed OTP and enqueues exactly one mail job', async () => {
-    const { service, update, mailQueue } = setup();
+  it('stores a hashed OTP and publishes exactly one mail job', async () => {
+    const { service, update, jobs } = setup();
     await service.sendOtp(user);
 
-    expect(mailQueue.enqueueEmailOtp).toHaveBeenCalledTimes(1);
-    const { otp, to } = mailQueue.enqueueEmailOtp.mock.calls[0][0];
+    expect(jobs.publish).toHaveBeenCalledTimes(1);
+    const { otp, to } = jobs.publish.mock.calls[0][1];
     expect(to).toBe('a@example.com');
     expect(otp).toMatch(/^\d{6}$/);
     const saved = update.mock.calls[0][1];
@@ -37,11 +37,11 @@ describe('EmailVerificationService', () => {
   });
 
   it('never reissues the previous OTP', async () => {
-    const { service, mailQueue } = setup({
+    const { service, jobs } = setup({
       emailOtpHash: await hashSecret('000000'),
     });
     for (let i = 0; i < 20; i++) await service.sendOtp(user);
-    const sent = mailQueue.enqueueEmailOtp.mock.calls.map((c) => c[0].otp);
+    const sent = jobs.publish.mock.calls.map((c) => c[1].otp);
     expect(sent).not.toContain('000000');
   });
 
