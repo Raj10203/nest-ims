@@ -43,8 +43,10 @@ jobs:
             (ESM .js imports, zod DTOs, two-layer CASL authorization with 404 for
             out-of-scope records, migrations for every schema change, comment style).
 
-            Get the changes with `gh pr diff ${{ github.event.pull_request.number }}` and
-            read the surrounding code when you need context. Review only the changed lines.
+            Get the changes with `gh pr diff ${{ github.event.pull_request.number }}`. This is
+            the whole PR against its base branch, not only the latest commit: review all of
+            it every time, ignoring earlier review comments. Read the surrounding code when
+            you need context, but report only on lines the PR changes.
 
             Look for, in this order:
             1. Bugs and wrong behaviour (logic, edge cases, unawaited promises).
@@ -59,10 +61,8 @@ jobs:
             or CI/deploy config unless it breaks the build. Do not repeat anything the
             PR description already lists as a known or intended change.
 
-            Post ONE comment and keep it updated: run
-            `gh pr comment ${{ github.event.pull_request.number }} --edit-last --body "..."`
-            and, only if that fails because there is no earlier comment, run the same
-            command without `--edit-last`. Use this form:
+            Post the review as ONE new comment (never edit or delete earlier ones) with
+            `gh pr comment ${{ github.event.pull_request.number }} --body "..."`, in this form:
 
             ## Claude review
             **Risk:** low | medium | high · reviewed `${{ github.event.pull_request.head.sha }}`
