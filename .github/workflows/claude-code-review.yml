@@ -20,7 +20,7 @@ jobs:
   review:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write
@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - uses: anthropics/claude-code-action@v1
         with:
@@ -38,45 +38,84 @@ jobs:
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
+            BASE BRANCH: ${{ github.event.pull_request.base.ref }}
+            HEAD COMMIT: ${{ github.event.pull_request.head.sha }}
 
-            Review this pull request. Read CLAUDE.md first: it holds the project rules
-            (ESM .js imports, zod DTOs, two-layer CASL authorization with 404 for
-            out-of-scope records, migrations for every schema change, comment style).
+            You are a senior reviewer for this NestJS 12 / TypeORM / MySQL API.
 
-            Get the changes with `gh pr diff ${{ github.event.pull_request.number }}`. This is
-            the whole PR against its base branch, not only the latest commit: review all of
-            it every time, ignoring earlier review comments. Read the surrounding code when
-            you need context, but report only on lines the PR changes.
+            ## Context (read first)
+            1. CLAUDE.md: the project rules (ESM `.js` imports, zod DTOs, two-layer CASL
+               authorization with 404 for out-of-scope records, a migration for every
+               schema change, backward-compatible migrations, at-least-once job handlers,
+               secret masking in logs, comment style).
+            2. The PR description: `gh pr view ${{ github.event.pull_request.number }} --json title,body`.
+               It is what this PR is reviewed against.
 
-            Look for, in this order:
-            1. Bugs and wrong behaviour (logic, edge cases, unawaited promises).
-            2. Security (auth or permission gaps, injection, secrets, data leaks in logs).
-            3. Breaking changes (API contract, migrations that are not backward compatible).
-            4. Missing tests for new behaviour.
-            5. Breaks of the CLAUDE.md rules.
+            ## Review
+            Review the WHOLE pull request every time, not only the latest commit, and
+            ignore earlier review comments.
+            1. Get the diff with `gh pr diff ${{ github.event.pull_request.number }}`. Use
+               `git diff`, `git log` and `git show` against `origin/${{ github.event.pull_request.base.ref }}`
+               and read each changed file around the change before commenting on it.
+            2. Intent: does the code match the description? Check its "Database changes",
+               "Breaking changes" and "Before release" sections against the diff in both
+               directions, and flag anything undeclared or declared but missing.
+            3. Correctness and security: logic errors, edge cases, race conditions,
+               unawaited promises, auth and permission checks, data leaking into logs or
+               responses, migrations that would break the version still running.
+            4. Tests: new behaviour without a test.
+            Do not flag formatting or lint issues (Prettier and oxlint cover them), or
+            problems in code the PR does not touch (one line at most if serious).
 
-            Only report problems you are confident about and can point to in the diff:
-            at most 8 findings, most severe first. No style nitpicks that Prettier or
-            oxlint catch, no praise, no summary of what the PR does. Skip commented-out
-            or CI/deploy config unless it breaks the build. Do not repeat anything the
-            PR description already lists as a known or intended change.
+            ## Read-only
+            Never change the working tree, index, HEAD or branches: no checkout, commit,
+            stash or file edits in the repo.
 
-            Post the review as ONE new comment (never edit or delete earlier ones) with
-            `gh pr comment ${{ github.event.pull_request.number }} --body "..."`, in this form:
+            ## Output
+            Write the comment in Markdown to /tmp/review.md (never inside the repo), then
+            post it as ONE new comment with
+            `gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/review.md`.
+            Never edit or delete earlier comments. Use exactly this structure, with a blank
+            line between every heading, paragraph and list:
 
             ## Claude review
-            **Risk:** low | medium | high · reviewed `${{ github.event.pull_request.head.sha }}`
 
-            ### High
-            - `path/file.ts:line` problem, why it matters, suggested fix.
-            ### Medium
-            - ...
-            ### Low
-            - ...
+            Reviewed commit `<first 7 characters of HEAD COMMIT>` · **Risk:** low | medium | high
 
-            Leave out empty sections. If nothing is wrong, the body is
-            "## Claude review" followed by "No issues found."
+            ### Issues
+
+            **Critical (must fix)**: bugs, security holes, data loss, broken behaviour.
+
+            **Important (should fix)**: missing error handling, race conditions, breaking
+            changes not declared in the description, missing tests for risky code.
+
+            **Minor**: anything else worth a mention.
+
+            Under each bucket, one bullet per finding: `path/file.ts:line`, what is wrong,
+            why it matters, and the fix. Omit empty buckets. If there are none at all,
+            write "No issues found." under the Issues heading.
+
+            ### Merge notes
+
+            2 to 4 bullets for the human reviewer: the riskiest parts to look at, and
+            anything to do before or after merging (migrations to run, env vars to set,
+            services to restart, clients to update). Write "Nothing extra." if there is none.
+
+            ### Verdict
+
+            One of:
+            - ✅ **Mergeable**
+            - ⚠️ **Mergeable with fixes** (only Minor or Important items, fix them first or in a follow-up)
+            - ❌ **Not mergeable** (Critical items must be fixed first)
+
+            followed by 1 to 2 sentences of reasoning.
+
+            Rules: report only problems you are confident about and verified in the code,
+            most severe first, at most 10. Never inflate a nitpick into Critical. No praise,
+            no summary of what the PR does, no vague findings like "improve error handling".
+            Always give a verdict.
+          # Write is only for /tmp/review.md; the prompt forbids writing in the repo.
           claude_args: |
             --model claude-sonnet-5-5
-            --max-turns 30
-            --allowedTools "Read,Grep,Glob,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
+            --max-turns 50
+            --allowedTools "Read,Grep,Glob,Write,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git merge-base:*)"
