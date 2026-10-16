@@ -1,28 +1,28 @@
-trigger: none
+# trigger: none
 
-pool:
-  name: nest-ims-pool
+# pool:
+#   name: nest-ims-pool
 
-parameters:
-  - name: imageTag
-    displayName: Git commit SHA to deploy
-    type: string
-    default: '48a213b6fbc237b3f6e83a239c8c36c38817e389'
+# parameters:
+#   - name: imageTag
+#     displayName: Git commit SHA to deploy
+#     type: string
+#     default: '48a213b6fbc237b3f6e83a239c8c36c38817e389'
 
-variables:
-  dockerHubUsername: 'raj10203'
-  dockerImageName: 'nest-ims'
+# variables:
+#   dockerHubUsername: 'raj10203'
+#   dockerImageName: 'nest-ims'
 
-steps:
-  - checkout: none
+# steps:
+#   - checkout: none
 
-  - task: SSH@0
-    displayName: Deploy image to Azure VM
-    inputs:
-      sshEndpoint: 'nest-ims-vm-service-connection'
-      runOptions: 'commands'
-      commands: |
-        set -e
-        echo "Deploying image: raj10203/nest-ims:${{ parameters.imageTag }}"
-        sudo /opt/nest-ims/deploy.sh "raj10203/nest-ims:${{ parameters.imageTag }}"
-      readyTimeout: '20000'
+#   - task: SSH@0
+#     displayName: Deploy image to Azure VM
+#     inputs:
+#       sshEndpoint: 'nest-ims-vm-service-connection'
+#       runOptions: 'commands'
+#       commands: |
+#         set -e
+#         echo "Deploying image: raj10203/nest-ims:${{ parameters.imageTag }}"
+#         sudo /opt/nest-ims/deploy.sh "raj10203/nest-ims:${{ parameters.imageTag }}"
+#       readyTimeout: '20000'

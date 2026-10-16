@@ -1,6 +1,7 @@
 import {
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -10,10 +11,12 @@ import type { Request } from 'express';
 import { env } from '../../config/env.js';
 import { User } from '../../entities/user.entity.js';
 import { UsersService } from '../users/users.service.js';
+import { ALLOW_UNVERIFIED_EMAIL } from './allow-unverified-email.decorator.js';
 import { IS_PUBLIC } from './public.decorator.js';
 
 // Registered globally (APP_GUARD): every route needs a valid access token
-// unless it is marked @Public().
+// unless it is marked @Public(), and the user's email must be verified unless
+// it is marked @AllowUnverifiedEmail().
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   constructor(
@@ -50,6 +53,14 @@ export class JwtAuthGuard implements CanActivate {
     // Loaded fresh so role / permission changes apply immediately.
     const user = await this.users.findById(userId);
     if (!user) throw new UnauthorizedException('User no longer exists');
+
+    const allowUnverified = this.reflector.getAllAndOverride<
+      boolean | undefined
+    >(ALLOW_UNVERIFIED_EMAIL, [context.getHandler(), context.getClass()]);
+    if (!user.emailVerifiedAt && !allowUnverified) {
+      throw new ForbiddenException('Email is not verified');
+    }
+
     request.user = user;
     return true;
   }

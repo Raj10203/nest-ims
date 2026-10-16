@@ -5,7 +5,8 @@
 
 # TypeScript build cache
 *.tsbuildinfo
-
+.claude/*
+.review-tmp/*
 # Logs
 logs
 *.log

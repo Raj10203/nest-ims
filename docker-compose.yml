@@ -3,20 +3,24 @@ services:
     image: node:24-alpine
     container_name: nest_ims_app
     working_dir: /app
-    command: sh -c "npm install && npm run start:dev"
+    command: sh -c "npm install --include=dev && npm run start:dev"
     ports:
       - "3001:3000"
     volumes:
       - ./:/app
     environment:
+      NODE_ENV: ${NODE_ENV:-development} # read from .env, so it is the only switch
       DB_HOST: mysql
       DB_PORT: 3306
       DB_NAME: nest_ims
       DB_USER: user
       DB_PASSWORD: password
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-ims}:${RABBITMQ_PASSWORD:-ims}@rabbitmq:5672
     depends_on:
       mysql:
         condition: service_healthy
+      rabbitmq:
+        condition: service_started
 
   mysql:
     image: mysql:8.0.44
@@ -36,5 +40,48 @@ services:
       timeout: 5s
       retries: 20
 
+  worker:
+    image: node:24-alpine
+    container_name: nest_ims_worker
+    working_dir: /app
+    command: sh -c "npm install --include=dev && npm run start:worker:dev"
+    volumes:
+      - ./:/app
+    environment:
+      NODE_ENV: ${NODE_ENV:-development} # read from .env, so it is the only switch
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-ims}:${RABBITMQ_PASSWORD:-ims}@rabbitmq:5672
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
+      MAIL_FROM: IMS <no-reply@ims.local>
+    depends_on:
+      app:
+        condition: service_started
+      rabbitmq:
+        condition: service_started
+      mailpit:
+        condition: service_started
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: nest_ims_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-ims}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-ims}
+    ports:
+      - "5672:5672" # AMQP
+      - "15672:15672" # management UI (RABBITMQ_USER / RABBITMQ_PASSWORD, default ims / ims)
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+  mailpit:
+    image: axllent/mailpit:v1.21
+    container_name: nest_ims_mailpit
+    ports:
+      - "1025:1025" # SMTP
+      - "8025:8025" # web UI
+    healthcheck:
+      disable: true
+
 volumes:
   mysql_data:
+  rabbitmq_data:
