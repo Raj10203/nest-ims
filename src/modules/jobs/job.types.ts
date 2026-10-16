@@ -24,6 +24,9 @@ export interface JobContext {
 
 export interface JobHandler<T extends JobType = JobType> {
   readonly type: T;
+  // Drops the job from the dead-letter queue after this long, for payloads
+  // holding a short-lived secret (an OTP). Unset keeps it until replayed.
+  readonly deadLetterTtlMs?: number;
   handle(payload: JobPayloads[T], context: JobContext): Promise<void>;
 }
 

@@ -6,7 +6,10 @@ import {
   retryQueue,
 } from './jobs.constants.js';
 
-async function setup(handle = vi.fn().mockResolvedValue(undefined)) {
+async function setup(
+  handle = vi.fn().mockResolvedValue(undefined),
+  deadLetterTtlMs?: number,
+) {
   const channel = {
     consume: vi.fn().mockResolvedValue(undefined),
     ack: vi.fn(),
@@ -15,7 +18,7 @@ async function setup(handle = vi.fn().mockResolvedValue(undefined)) {
     cancelAll: vi.fn().mockResolvedValue(undefined),
   };
   const rabbit = { createChannel: () => channel };
-  const handler = { type: 'mail.send-email-otp', handle };
+  const handler = { type: 'mail.send-email-otp', handle, deadLetterTtlMs };
   const worker = new JobWorker(rabbit as any, [handler] as any);
   await worker.onApplicationBootstrap();
   const deliver = async (body: string, attempt = 1, type = handler.type) => {
@@ -67,6 +70,15 @@ describe('JobWorker', () => {
     await deliver(job(), MAX_ATTEMPTS);
     expect(channel.sendToQueue.mock.calls[0][0]).toBe(DEAD_QUEUE);
     expect(channel.ack).toHaveBeenCalled();
+  });
+
+  it("dead-letters with the handler's TTL, if it sets one", async () => {
+    const { channel, deliver, job } = await setup(
+      vi.fn().mockRejectedValue(new Error('boom')),
+      60_000,
+    );
+    await deliver(job(), MAX_ATTEMPTS);
+    expect(channel.sendToQueue.mock.calls[0][2].expiration).toBe(60_000);
   });
 
   it('dead-letters unknown job types and malformed messages without retrying', async () => {

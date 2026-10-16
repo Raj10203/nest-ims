@@ -1,9 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { createTransport } from 'nodemailer';
 import { mailEnv } from '../../config/mail-env.js';
 
 @Injectable()
-export class MailService {
+export class MailService implements OnModuleDestroy {
   private readonly transport = createTransport({
     host: mailEnv.MAIL_HOST,
     port: mailEnv.MAIL_PORT,
@@ -26,5 +26,9 @@ export class MailService {
     html: string;
   }): Promise<void> {
     await this.transport.sendMail({ from: mailEnv.MAIL_FROM, ...message });
+  }
+
+  onModuleDestroy(): void {
+    this.transport.close();
   }
 }

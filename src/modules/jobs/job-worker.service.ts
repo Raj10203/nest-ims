@@ -114,7 +114,12 @@ export class JobWorker implements OnApplicationBootstrap, OnModuleDestroy {
       this.logger.error(
         `${envelope.type} ${envelope.id} failed for good after ${attempt} attempts: ${reason}`,
       );
-      return this.deadLetter(message, attempt, reason);
+      return this.deadLetter(
+        message,
+        attempt,
+        reason,
+        this.handlers.get(envelope.type)?.deadLetterTtlMs,
+      );
     }
 
     const delay = RETRY_DELAYS_MS[attempt - 1];
@@ -135,9 +140,11 @@ export class JobWorker implements OnApplicationBootstrap, OnModuleDestroy {
     message: ConsumeMessage,
     attempt: number,
     reason: string,
+    ttlMs?: number,
   ): Promise<void> {
     await this.channel.sendToQueue(DEAD_QUEUE, message.content, {
       persistent: true,
+      expiration: ttlMs,
       contentType: 'application/json',
       messageId: message.properties.messageId,
       type: message.properties.type,

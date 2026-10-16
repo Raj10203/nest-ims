@@ -7,7 +7,7 @@ import {
   Injectable,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { LessThan, Repository } from 'typeorm';
 import { hashSecret, verifySecret } from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
 import { JobQueueService } from '../jobs/job-queue.service.js';
@@ -68,12 +68,18 @@ export class EmailVerificationService {
     ) {
       throw new BadRequestException('OTP expired or not requested');
     }
-    if (state.emailOtpAttempts >= OTP_MAX_ATTEMPTS) {
+    // Claim the attempt before checking the code, in one conditional UPDATE, so
+    // concurrent requests cannot all pass the limit.
+    const claim = await this.users.increment(
+      { id: user.id, emailOtpAttempts: LessThan(OTP_MAX_ATTEMPTS) },
+      'emailOtpAttempts',
+      1,
+    );
+    if (!claim.affected) {
       throw new BadRequestException('Too many attempts, request a new OTP');
     }
 
     if (!(await verifySecret(otp, state.emailOtpHash))) {
-      await this.users.increment({ id: user.id }, 'emailOtpAttempts', 1);
       throw new BadRequestException('Invalid OTP');
     }
 

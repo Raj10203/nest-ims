@@ -1,4 +1,6 @@
 import { RoleName } from '../../common/enums/role-name.enum.js';
+import { User } from '../../entities/user.entity.js';
+import { CaslAbilityFactory } from '../authorization/casl-ability.factory.js';
 import { RolesService } from './roles.service.js';
 
 function setup() {
@@ -11,10 +13,15 @@ function setup() {
     }),
   };
   const find = vi.fn().mockResolvedValue([
-    { id: 2, name: RoleName.ADMIN, level: 80, permissions: [] },
+    { id: 3, name: RoleName.ADMIN, level: 80, permissions: [] },
+    { id: 2, name: RoleName.MANAGER, level: 60, permissions: [] },
     { id: 1, name: RoleName.SITE_TECHNICIAN, level: 20, permissions: [] },
   ]);
-  const service = new RolesService({ find } as any, cache as any, {} as any);
+  const service = new RolesService(
+    { find } as any,
+    cache as any,
+    new CaslAbilityFactory(),
+  );
   return { service, find, cache };
 }
 
@@ -30,7 +37,7 @@ describe('RolesService cache', () => {
   it('caches only id, name and level', async () => {
     const { service } = setup();
     expect((await service.findAll())[0]).toEqual({
-      id: 2,
+      id: 3,
       name: RoleName.ADMIN,
       level: 80,
     });
@@ -40,5 +47,32 @@ describe('RolesService cache', () => {
     const { service } = setup();
     expect((await service.findById(1))?.name).toBe(RoleName.SITE_TECHNICIAN);
     expect(await service.findById(99)).toBeNull();
+  });
+});
+
+describe('RolesService.findAssignable', () => {
+  const actor = (name: RoleName, level: number, actions: string[]) =>
+    ({
+      id: 5,
+      role: {
+        name,
+        level,
+        permissions: actions.map((action) => ({ action, subject: 'User' })),
+      },
+    }) as unknown as User;
+
+  it('offers only roles below the actor level', async () => {
+    const { service } = setup();
+    const roles = await service.findAssignable(
+      actor(RoleName.MANAGER, 60, ['create']),
+    );
+    expect(roles.map((r) => r.name)).toEqual([RoleName.SITE_TECHNICIAN]);
+  });
+
+  it('offers nothing without the create permission', async () => {
+    const { service } = setup();
+    expect(
+      await service.findAssignable(actor(RoleName.ADMIN, 80, ['read'])),
+    ).toEqual([]);
   });
 });

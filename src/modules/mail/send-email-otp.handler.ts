@@ -5,6 +5,7 @@ import { MailService } from './mail.service.js';
 @Injectable()
 export class SendEmailOtpHandler implements JobHandler<'mail.send-email-otp'> {
   readonly type = 'mail.send-email-otp';
+  readonly deadLetterTtlMs = 24 * 60 * 60 * 1000;
 
   constructor(private readonly mail: MailService) {}
 

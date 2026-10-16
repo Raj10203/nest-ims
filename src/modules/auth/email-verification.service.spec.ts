@@ -12,7 +12,9 @@ import {
 
 function setup(state: Partial<User> | null = null) {
   const update = vi.fn().mockResolvedValue(undefined);
-  const increment = vi.fn().mockResolvedValue(undefined);
+  const increment = vi.fn().mockResolvedValue({
+    affected: (state?.emailOtpAttempts ?? 0) < OTP_MAX_ATTEMPTS ? 1 : 0,
+  });
   const qb = {
     addSelect: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
@@ -51,7 +53,7 @@ describe('EmailVerificationService', () => {
 
   it('rejects a resend inside the cooldown and publishes nothing', async () => {
     const { service, jobs } = setup({
-      emailOtpExpiresAt: new Date(Date.now() + 9 * 60_000),
+      emailOtpExpiresAt: new Date(Date.now() + 9.5 * 60_000),
     });
     await expect(service.sendOtp(user)).rejects.toThrow(HttpException);
     expect(jobs.publish).not.toHaveBeenCalled();
