@@ -73,12 +73,8 @@ export class JobWorker implements OnApplicationBootstrap, OnModuleDestroy {
   }
 
   private async run(message: ConsumeMessage): Promise<void> {
-    let envelope: JobEnvelope;
-    try {
-      envelope = JSON.parse(message.content.toString());
-    } catch {
-      return this.deadLetter(message, 1, 'Malformed message');
-    }
+    const envelope = parseEnvelope(message.content);
+    if (!envelope) return this.deadLetter(message, 1, 'Malformed message');
 
     const attempt = Number(message.properties.headers?.[ATTEMPT_HEADER] ?? 1);
     const handler = this.handlers.get(envelope.type);
@@ -155,6 +151,21 @@ export class JobWorker implements OnApplicationBootstrap, OnModuleDestroy {
       },
     });
     this.channel.ack(message);
+  }
+}
+
+// Valid JSON can still be null, a number or a string; anything without a type
+// would throw later and be requeued forever instead of dead-lettered.
+function parseEnvelope(content: Buffer): JobEnvelope | null {
+  try {
+    const value: unknown = JSON.parse(content.toString());
+    return typeof value === 'object' &&
+      value !== null &&
+      typeof (value as JobEnvelope).type === 'string'
+      ? (value as JobEnvelope)
+      : null;
+  } catch {
+    return null;
   }
 }
 

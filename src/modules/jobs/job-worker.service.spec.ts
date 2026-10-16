@@ -85,10 +85,13 @@ describe('JobWorker', () => {
     const { channel, deliver, job } = await setup();
     await deliver(job('nope.unknown'));
     await deliver('not json');
-    expect(channel.sendToQueue.mock.calls.map((c) => c[0])).toEqual([
-      DEAD_QUEUE,
-      DEAD_QUEUE,
-    ]);
+    for (const body of ['null', '42', '"text"', '{"payload":{}}']) {
+      await deliver(body);
+    }
+    expect(channel.sendToQueue.mock.calls.map((c) => c[0])).toEqual(
+      Array(6).fill(DEAD_QUEUE),
+    );
+    expect(channel.nack).not.toHaveBeenCalled();
   });
 
   it('requeues the message when it cannot be moved to a retry queue', async () => {

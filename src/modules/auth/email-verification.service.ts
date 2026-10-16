@@ -8,13 +8,14 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { LessThan, Repository } from 'typeorm';
+import {
+  OTP_MAX_ATTEMPTS,
+  OTP_RESEND_COOLDOWN_SECONDS,
+  OTP_TTL_MINUTES,
+} from '../../common/otp.constants.js';
 import { hashSecret, verifySecret } from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
 import { JobQueueService } from '../jobs/job-queue.service.js';
-
-export const OTP_TTL_MINUTES = 10;
-export const OTP_MAX_ATTEMPTS = 5;
-export const OTP_RESEND_COOLDOWN_SECONDS = 60;
 
 @Injectable()
 export class EmailVerificationService {
@@ -28,15 +29,19 @@ export class EmailVerificationService {
     this.assertNotVerified(user);
 
     const previous = await this.loadOtpState(user.id);
-    const sentAt = previous?.emailOtpExpiresAt
-      ? previous.emailOtpExpiresAt.getTime() - OTP_TTL_MINUTES * 60_000
-      : null;
-    if (sentAt && Date.now() - sentAt < OTP_RESEND_COOLDOWN_SECONDS * 1000) {
-      throw new HttpException(
-        `Wait ${OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code`,
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
+    const now = Date.now();
+    // A code sent within the cooldown expires after this cutoff.
+    const cooldownCutoff = new Date(
+      now + OTP_TTL_MINUTES * 60_000 - OTP_RESEND_COOLDOWN_SECONDS * 1000,
+    );
+    // Cheap early exit, before any scrypt hashing.
+    if (
+      previous?.emailOtpExpiresAt &&
+      previous.emailOtpExpiresAt > cooldownCutoff
+    ) {
+      throw tooSoon();
     }
+
     let otp = generateOtp();
     while (
       previous?.emailOtpHash &&
@@ -45,16 +50,40 @@ export class EmailVerificationService {
       otp = generateOtp();
     }
 
-    await this.users.update(user.id, {
-      emailOtpHash: await hashSecret(otp),
-      emailOtpExpiresAt: new Date(Date.now() + OTP_TTL_MINUTES * 60_000),
-      emailOtpAttempts: 0,
-    });
-    await this.jobs.publish('mail.send-email-otp', {
-      to: user.email,
-      otp,
-      expiresInMinutes: OTP_TTL_MINUTES,
-    });
+    const emailOtpHash = await hashSecret(otp);
+    // The UPDATE repeats the cooldown check, so concurrent sends cannot all pass it.
+    const { affected } = await this.users
+      .createQueryBuilder()
+      .update(User)
+      .set({
+        emailOtpHash,
+        emailOtpExpiresAt: new Date(now + OTP_TTL_MINUTES * 60_000),
+        emailOtpAttempts: 0,
+      })
+      .where('id = :id', { id: user.id })
+      .andWhere(
+        '(emailOtpExpiresAt IS NULL OR emailOtpExpiresAt <= :cooldownCutoff)',
+        { cooldownCutoff },
+      )
+      .execute();
+    if (!affected) throw tooSoon();
+
+    try {
+      await this.jobs.publish('mail.send-email-otp', {
+        to: user.email,
+        otp,
+        expiresInMinutes: OTP_TTL_MINUTES,
+      });
+    } catch (error) {
+      // The broker may have taken the message anyway (a confirm timeout), so keep
+      // the new code valid and only lift the cooldown, letting the user retry at
+      // once. Matching the hash leaves a newer code from another request alone.
+      await this.users.update(
+        { id: user.id, emailOtpHash },
+        { emailOtpExpiresAt: cooldownCutoff },
+      );
+      throw error;
+    }
   }
 
   async verifyOtp(user: User, otp: string): Promise<void> {
@@ -113,4 +142,11 @@ export class EmailVerificationService {
 
 function generateOtp(): string {
   return randomInt(0, 1_000_000).toString().padStart(6, '0');
+}
+
+function tooSoon(): HttpException {
+  return new HttpException(
+    `Wait ${OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code`,
+    HttpStatus.TOO_MANY_REQUESTS,
+  );
 }

@@ -1,16 +1,16 @@
 import {
   BadRequestException,
   ConflictException,
-  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { hashSecret } from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
-import {
-  EmailVerificationService,
-  OTP_MAX_ATTEMPTS,
-} from './email-verification.service.js';
+import { OTP_MAX_ATTEMPTS } from '../../common/otp.constants.js';
+import { EmailVerificationService } from './email-verification.service.js';
 
-function setup(state: Partial<User> | null = null) {
+// `updated` is what the conditional UPDATE in sendOtp reports: false means
+// another request claimed the cooldown first.
+function setup(state: Partial<User> | null = null, { updated = true } = {}) {
   const update = vi.fn().mockResolvedValue(undefined);
   const increment = vi.fn().mockResolvedValue({
     affected: (state?.emailOtpAttempts ?? 0) < OTP_MAX_ATTEMPTS ? 1 : 0,
@@ -18,26 +18,30 @@ function setup(state: Partial<User> | null = null) {
   const qb = {
     addSelect: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
+    andWhere: vi.fn().mockReturnThis(),
+    update: vi.fn().mockReturnThis(),
+    set: vi.fn().mockReturnThis(),
     getOne: vi.fn().mockResolvedValue(state),
+    execute: vi.fn().mockResolvedValue({ affected: updated ? 1 : 0 }),
   };
   const users = { update, increment, createQueryBuilder: () => qb };
   const jobs = { publish: vi.fn().mockResolvedValue(undefined) };
   const service = new EmailVerificationService(users as any, jobs as any);
-  return { service, update, increment, jobs };
+  return { service, update, increment, jobs, qb };
 }
 
 const user = { id: 1, email: 'a@example.com', emailVerifiedAt: null } as User;
 
 describe('EmailVerificationService', () => {
   it('stores a hashed OTP and publishes exactly one mail job', async () => {
-    const { service, update, jobs } = setup();
+    const { service, qb, jobs } = setup();
     await service.sendOtp(user);
 
     expect(jobs.publish).toHaveBeenCalledTimes(1);
     const { otp, to } = jobs.publish.mock.calls[0][1];
     expect(to).toBe('a@example.com');
     expect(otp).toMatch(/^\d{6}$/);
-    const saved = update.mock.calls[0][1];
+    const saved = qb.set.mock.calls[0][0];
     expect(saved.emailOtpHash).not.toContain(otp);
     expect(saved.emailOtpAttempts).toBe(0);
   });
@@ -51,12 +55,39 @@ describe('EmailVerificationService', () => {
     expect(sent).not.toContain('000000');
   });
 
-  it('rejects a resend inside the cooldown and publishes nothing', async () => {
-    const { service, jobs } = setup({
+  it('rejects a resend inside the cooldown with 429 before writing anything', async () => {
+    const { service, jobs, qb } = setup({
       emailOtpExpiresAt: new Date(Date.now() + 9.5 * 60_000),
     });
-    await expect(service.sendOtp(user)).rejects.toThrow(HttpException);
+    await expect(service.sendOtp(user)).rejects.toMatchObject({
+      status: HttpStatus.TOO_MANY_REQUESTS,
+    });
+    expect(qb.execute).not.toHaveBeenCalled();
     expect(jobs.publish).not.toHaveBeenCalled();
+  });
+
+  it('answers 429 and publishes nothing when a concurrent send wins the UPDATE', async () => {
+    const { service, jobs } = setup(null, { updated: false });
+    await expect(service.sendOtp(user)).rejects.toMatchObject({
+      status: HttpStatus.TOO_MANY_REQUESTS,
+    });
+    expect(jobs.publish).not.toHaveBeenCalled();
+  });
+
+  it('lifts the cooldown on its own code only when the mail job cannot be queued', async () => {
+    const { service, jobs, update, qb } = setup();
+    jobs.publish.mockRejectedValue(new Error('broker down'));
+    await expect(service.sendOtp(user)).rejects.toThrow('broker down');
+
+    const { emailOtpHash, emailOtpExpiresAt } = qb.set.mock.calls[0][0];
+    const [where, changes] = update.mock.calls[0];
+    expect(where).toEqual({ id: user.id, emailOtpHash });
+    expect(Object.keys(changes)).toEqual(['emailOtpExpiresAt']);
+    // Still valid, but already past the cooldown.
+    expect(changes.emailOtpExpiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(changes.emailOtpExpiresAt.getTime()).toBeLessThan(
+      emailOtpExpiresAt.getTime(),
+    );
   });
 
   it('allows a resend after the cooldown', async () => {
