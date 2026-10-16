@@ -1,4 +1,8 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  HttpException,
+} from '@nestjs/common';
 import { hashSecret } from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
 import {
@@ -43,6 +47,22 @@ describe('EmailVerificationService', () => {
     for (let i = 0; i < 20; i++) await service.sendOtp(user);
     const sent = jobs.publish.mock.calls.map((c) => c[1].otp);
     expect(sent).not.toContain('000000');
+  });
+
+  it('rejects a resend inside the cooldown and publishes nothing', async () => {
+    const { service, jobs } = setup({
+      emailOtpExpiresAt: new Date(Date.now() + 9 * 60_000),
+    });
+    await expect(service.sendOtp(user)).rejects.toThrow(HttpException);
+    expect(jobs.publish).not.toHaveBeenCalled();
+  });
+
+  it('allows a resend after the cooldown', async () => {
+    const { service, jobs } = setup({
+      emailOtpExpiresAt: new Date(Date.now() + 8 * 60_000),
+    });
+    await service.sendOtp(user);
+    expect(jobs.publish).toHaveBeenCalledTimes(1);
   });
 
   it('rejects send and verify for an already verified user', async () => {

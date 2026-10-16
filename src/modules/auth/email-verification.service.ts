@@ -2,6 +2,8 @@ import { randomInt } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
+  HttpStatus,
   Injectable,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -12,6 +14,7 @@ import { JobQueueService } from '../jobs/job-queue.service.js';
 
 export const OTP_TTL_MINUTES = 10;
 export const OTP_MAX_ATTEMPTS = 5;
+export const OTP_RESEND_COOLDOWN_SECONDS = 60;
 
 @Injectable()
 export class EmailVerificationService {
@@ -25,6 +28,15 @@ export class EmailVerificationService {
     this.assertNotVerified(user);
 
     const previous = await this.loadOtpState(user.id);
+    const sentAt = previous?.emailOtpExpiresAt
+      ? previous.emailOtpExpiresAt.getTime() - OTP_TTL_MINUTES * 60_000
+      : null;
+    if (sentAt && Date.now() - sentAt < OTP_RESEND_COOLDOWN_SECONDS * 1000) {
+      throw new HttpException(
+        `Wait ${OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
     let otp = generateOtp();
     while (
       previous?.emailOtpHash &&
