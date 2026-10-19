@@ -8,6 +8,7 @@ export const createSiteSchema = z.object({
   city: z.string().trim().min(1).max(100).nullish(),
   state: z.string().trim().min(1).max(100).nullish(),
   isActive: z.boolean().default(true),
+  inchargeId: z.number().int().positive().nullish(),
 });
 
 export class CreateSiteDto extends createZodDto(createSiteSchema) {}

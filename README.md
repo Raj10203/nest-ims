@@ -41,7 +41,7 @@ src/
     authorization/           CASL ability factory + policies guard
     users/  sites/  roles/   feature modules (controller, service, dto, specs)
     jobs/                    RabbitMQ publisher, consumer, retry topology
-    mail/                    nodemailer + the "send email OTP" job handler
+    mail/                    dynamic module MailModule.forRoot(options): nodemailer + the "send email OTP" job handler
 ```
 
 Each feature keeps its module, controller, service, DTOs and tests together; entities live in one shared folder.
@@ -76,7 +76,14 @@ Five roles in a strict hierarchy:
 - **Permissions are data, scoping is code.** `src/database/seeds/role-permissions.ts` is the single source of truth for `(action, subject)` pairs and is synced into the DB by the seed command. `CaslAbilityFactory` adds the hierarchy and ownership conditions.
 - **Two layers:** `@CheckAbility()` + `PoliciesGuard` answer "may this role do this at all"; the service then checks the specific record. Out-of-scope records return **404, not 403**, so ids are not revealed.
 
-### 1.6 Background jobs (RabbitMQ)
+### 1.6 Sites and site in-charge
+
+- Sites are shared: any role with the `Site` permissions can act on every site.
+- A site can have an **in-charge** (`inchargeId`, optional on create and update). The user must have the `site_incharge` role (400 otherwise) and be within the actor's user scope (404 otherwise).
+- A user who is still in charge of a site cannot be deleted (409); assign another in-charge first.
+- This makes `UsersModule` and `SitesModule` depend on each other. The cycle is resolved with `forwardRef` in both modules and both constructors; in ESM the injected parameter is typed `Pick<OtherService, 'method'>` so decorator metadata does not read the class before the import cycle has loaded it.
+
+### 1.7 Background jobs (RabbitMQ)
 
 ```mermaid
 flowchart LR
@@ -96,8 +103,10 @@ flowchart LR
 - Retries use TTL queues with delays of 5 s, 30 s and 5 min (4 attempts in total), then the message lands in `jobs.dead` with the last error for manual replay.
 - Queues are **quorum queues** (replicated, durable). Any number of workers can run safely; RabbitMQ gives each message to one consumer.
 - Adding a job: add its payload type, write a handler, register it in `JobsWorkerModule`.
+- The exchange and all queues are declared by the API and the worker on every (re)connect, so there is no setup command. A channel setup failure is logged, never thrown, so it cannot crash the process.
+- `MailModule` is a dynamic module: the worker reads `MAIL_*` and passes it to `MailModule.forRoot(options)`; `MailService` receives it through the `MAIL_OPTIONS` token and never reads env itself.
 
-### 1.7 Cross-cutting concerns
+### 1.8 Cross-cutting concerns
 
 - **Validation:** zod everywhere (env at startup, request bodies/queries via a global pipe). Invalid config crashes the app at boot, naming the variable.
 - **Logging:** pino-http. Every line has method, url, status, time, `userId` and `role`. Bodies are logged only in development (or opt-in in production); any field named like password/secret/token/otp/hash/authorization is masked at any depth.
@@ -105,7 +114,7 @@ flowchart LR
 - **Caching:** the roles list is cached in memory for an hour.
 - **Graceful shutdown:** `enableShutdownHooks()` so `docker stop` is instant instead of waiting for SIGKILL.
 
-### 1.8 API surface
+### 1.9 API surface
 
 All routes are under `/api`, except `GET /health`.
 
@@ -113,7 +122,7 @@ All routes are under `/api`, except `GET /health`.
 | --- | --- |
 | Auth | `POST /auth/login`, `/auth/refresh`, `/auth/logout`, `GET /auth/me`, `POST /auth/email-otp/send`, `/auth/email-otp/verify` |
 | Users | `POST/GET /users`, `GET/PATCH/DELETE /users/:id` |
-| Sites | `POST/GET /sites`, `GET/PATCH/DELETE /sites/:id` |
+| Sites | `POST/GET /sites`, `GET/PATCH/DELETE /sites/:id` (body accepts `inchargeId`) |
 | Roles | `GET /roles` |
 
 ---
@@ -173,6 +182,8 @@ docker compose exec app npm run lint        # oxlint
 docker compose exec app npm run format      # prettier
 ```
 
+When Claude Code edits a `.ts` file under `src/` or `test/`, a hook (`.claude/hooks/format-lint.sh`) runs `format` and `lint` in the app container automatically, and lint errors block until fixed.
+
 ---
 
 ## 3. Production
@@ -213,7 +224,7 @@ The same image runs every role; only the command changes:
 ### 3.2 Production services
 
 - **Mail:** a real SMTP provider, Google (`smtp.gmail.com`, port 465 with `MAIL_SECURE=true`, an app password in `MAIL_USER` / `MAIL_PASSWORD`). Only the worker needs the `MAIL_*` settings.
-- **RabbitMQ:** a real broker with its own credentials, reached over TLS (`amqps://` in `RABBITMQ_URL`). Both the API and the worker need the URL.
+- **RabbitMQ:** a real broker with its own credentials, reached over TLS (`amqps://` in `RABBITMQ_URL`, vhost as the path, e.g. `amqps://user:pass@host:5671/ims`). Both the API and the worker need the URL. The queues are created automatically on first connect, so the broker user needs **configure, write and read** permissions on its vhost. Queue arguments cannot change once a queue exists (RabbitMQ answers `PRECONDITION_FAILED`), so such a change needs a new queue name.
 - **Dedicated worker server:** the worker runs on its own machine, so slow or failing mail jobs never steal CPU or memory from the API. Because RabbitMQ delivers each message to exactly one consumer, more workers can be added without coordination.
 - **Database:** MySQL with `DB_SSL=true` (and optional `DB_SSL_CA`).
 - **Configuration:** environment variables only. No `.env`, `node_modules` or `dist` is ever copied into the image, and the container refuses to start if a variable is missing.
@@ -297,3 +308,5 @@ sequenceDiagram
 | Migrations only, backward compatible | Zero-downtime deploys; old version keeps working during schema change |
 | One image, many commands | Same artifact for API, worker, migrations and seed; SHA-tagged for rollback |
 | Docker-only development | Identical environment for everyone, one command to start |
+| `MailModule.forRoot(options)` dynamic module | Config is passed in by the caller, so the service never reads env and tests pass options directly |
+| `forwardRef` between Users and Sites | Each rule stays in the service that owns the data; new cycles should prefer a third module or a one-way call |

@@ -1,6 +1,5 @@
 import { DynamicModule, Module } from '@nestjs/common';
-import { MAIL_OPTIONS, MailOptions } from './mail.constants.js';
-import { MailService } from './mail.service.js';
+import { MAIL_OPTIONS, MailOptions, MailService } from './mail.service.js';
 import { SendEmailOtpHandler } from './send-email-otp.handler.js';
 
 // Worker side only: the API publishes mail jobs through JobsModule.

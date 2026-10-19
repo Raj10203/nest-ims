@@ -1,8 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { createTransport } from 'nodemailer';
-import type { MailOptions } from './mail.constants.js';
 import { MailModule } from './mail.module.js';
-import { MailService } from './mail.service.js';
+import { MailService, type MailOptions } from './mail.service.js';
 
 const transport = vi.hoisted(() => ({
   sendMail: vi.fn(),

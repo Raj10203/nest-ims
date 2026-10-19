@@ -29,4 +29,12 @@ export class Site extends BaseEntity {
 
   @Column({ type: 'int', nullable: true })
   createdById: number | null;
+
+  // UsersService refuses to delete an in-charge, so SET NULL is only a backstop.
+  @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'inchargeId' })
+  incharge: User | null;
+
+  @Column({ type: 'int', nullable: true })
+  inchargeId: number | null;
 }

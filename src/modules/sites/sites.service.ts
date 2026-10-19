@@ -1,12 +1,17 @@
 import {
+  BadRequestException,
   ConflictException,
+  forwardRef,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { RoleName } from '../../common/enums/role-name.enum.js';
 import { Site } from '../../entities/site.entity.js';
 import { User } from '../../entities/user.entity.js';
+import { UsersService } from '../users/users.service.js';
 import { CreateSiteDto } from './dto/create-site.dto.js';
 import { ListSitesQueryDto } from './dto/list-sites-query.dto.js';
 import { UpdateSiteDto } from './dto/update-site.dto.js';
@@ -17,10 +22,15 @@ import { UpdateSiteDto } from './dto/update-site.dto.js';
 export class SitesService {
   constructor(
     @InjectRepository(Site) private readonly sites: Repository<Site>,
+    @Inject(forwardRef(() => UsersService))
+    // Pick, not UsersService: decorator metadata would read the class before
+    // the Users <-> Sites import cycle has initialized it.
+    private readonly usersService: Pick<UsersService, 'findOneFor'>,
   ) {}
 
   async create(actor: User, dto: CreateSiteDto): Promise<Site> {
     await this.assertCodeFree(dto.code);
+    if (dto.inchargeId) await this.assertCanBeIncharge(actor, dto.inchargeId);
     return this.sites.save(
       this.sites.create({
         name: dto.name,
@@ -29,6 +39,7 @@ export class SitesService {
         city: dto.city ?? null,
         state: dto.state ?? null,
         isActive: dto.isActive,
+        inchargeId: dto.inchargeId ?? null,
         createdById: actor.id,
       }),
     );
@@ -47,9 +58,12 @@ export class SitesService {
     return this.findOneOrFail(id);
   }
 
-  async update(id: number, dto: UpdateSiteDto): Promise<Site> {
+  async update(actor: User, id: number, dto: UpdateSiteDto): Promise<Site> {
     const site = await this.findOneOrFail(id);
     if (dto.code && dto.code !== site.code) await this.assertCodeFree(dto.code);
+    if (dto.inchargeId && dto.inchargeId !== site.inchargeId) {
+      await this.assertCanBeIncharge(actor, dto.inchargeId);
+    }
     await this.sites.update(id, dto);
     return this.findOneOrFail(id);
   }
@@ -57,6 +71,23 @@ export class SitesService {
   async remove(id: number): Promise<void> {
     await this.findOneOrFail(id);
     await this.sites.delete(id);
+  }
+
+  isInchargeOfAnySite(userId: number): Promise<boolean> {
+    return this.sites.existsBy({ inchargeId: userId });
+  }
+
+  // findOneFor applies the actor's user scope, so an out-of-scope id is a 404.
+  private async assertCanBeIncharge(
+    actor: User,
+    userId: number,
+  ): Promise<void> {
+    const user = await this.usersService.findOneFor(actor, userId);
+    if (user.role.name !== RoleName.SITE_INCHARGE) {
+      throw new BadRequestException(
+        `User ${userId} does not have the ${RoleName.SITE_INCHARGE} role`,
+      );
+    }
   }
 
   private async findOneOrFail(id: number): Promise<Site> {

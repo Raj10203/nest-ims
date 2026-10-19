@@ -45,8 +45,12 @@ export class SitesController {
 
   @Patch(':id')
   @CheckAbility('update', 'Site')
-  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateSiteDto) {
-    return this.sitesService.update(id, dto);
+  update(
+    @CurrentUser() actor: User,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateSiteDto,
+  ) {
+    return this.sitesService.update(actor, id, dto);
   }
 
   @Delete(':id')

@@ -42,6 +42,7 @@ export class RabbitMqConnection implements OnApplicationShutdown {
   private readonly logger = new Logger(RabbitMqConnection.name);
   // Reconnects on its own; the URL holds credentials, so it is never logged.
   private readonly connection = connect([rabbitmqEnv.RABBITMQ_URL]);
+  private closing = false;
 
   constructor() {
     this.connection.on('connect', () => this.logger.log('Connected'));
@@ -51,10 +52,17 @@ export class RabbitMqConnection implements OnApplicationShutdown {
   }
 
   createChannel(): ChannelWrapper {
-    return this.connection.createChannel({ setup: assertTopology });
+    const channel = this.connection.createChannel({ setup: assertTopology });
+    // A failed setup is emitted as 'error'; with no listener, EventEmitter throws
+    // it as an unhandled rejection, which crashes the process.
+    channel.on('error', (err: Error) => {
+      if (!this.closing) this.logger.error(`Channel error: ${err.message}`);
+    });
+    return channel;
   }
 
   async onApplicationShutdown(): Promise<void> {
+    this.closing = true;
     await this.connection.close();
   }
 }

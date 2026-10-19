@@ -2,6 +2,8 @@ import { subject } from '@casl/ability';
 import {
   ConflictException,
   ForbiddenException,
+  forwardRef,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -14,6 +16,7 @@ import {
   readableUsersWhere,
 } from '../authorization/casl-ability.factory.js';
 import { RolesService } from '../roles/roles.service.js';
+import { SitesService } from '../sites/sites.service.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
@@ -24,6 +27,9 @@ export class UsersService {
     @InjectRepository(User) private readonly users: Repository<User>,
     private readonly roles: RolesService,
     private readonly abilityFactory: CaslAbilityFactory,
+    @Inject(forwardRef(() => SitesService))
+    // Pick: see the matching constructor in SitesService.
+    private readonly sitesService: Pick<SitesService, 'isInchargeOfAnySite'>,
   ) {}
 
   async create(actor: User, dto: CreateUserDto): Promise<User> {
@@ -106,6 +112,11 @@ export class UsersService {
   async remove(actor: User, id: number): Promise<void> {
     const target = await this.findOneOrFail(id);
     this.assertCan(actor, 'delete', target);
+    if (await this.sitesService.isInchargeOfAnySite(id)) {
+      throw new ConflictException(
+        'This user is in charge of a site; assign another in-charge first',
+      );
+    }
     await this.users.delete(id);
   }
 
