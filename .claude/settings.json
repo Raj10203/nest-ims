@@ -6,9 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/lint.sh",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/format-lint.sh",
             "timeout": 60,
-            "statusMessage": "Linting with oxlint..."
+            "statusMessage": "Formatting and linting in the app container..."
           }
         ]
       }

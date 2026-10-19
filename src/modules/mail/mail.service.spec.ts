@@ -1,21 +1,20 @@
+import { Test } from '@nestjs/testing';
 import { createTransport } from 'nodemailer';
+import type { MailOptions } from './mail.constants.js';
+import { MailModule } from './mail.module.js';
 import { MailService } from './mail.service.js';
-
-const env = vi.hoisted(() => ({
-  MAIL_HOST: 'smtp.example.com',
-  MAIL_PORT: 587,
-  MAIL_FROM: 'IMS <no-reply@example.com>',
-  MAIL_USER: undefined as string | undefined,
-  MAIL_PASSWORD: undefined as string | undefined,
-  MAIL_SECURE: undefined as boolean | undefined,
-}));
-vi.mock('../../config/mail-env.js', () => ({ mailEnv: env }));
 
 const transport = vi.hoisted(() => ({
   sendMail: vi.fn(),
   close: vi.fn(),
 }));
 vi.mock('nodemailer', () => ({ createTransport: vi.fn(() => transport) }));
+
+const options: MailOptions = {
+  host: 'smtp.example.com',
+  port: 587,
+  from: 'IMS <no-reply@example.com>',
+};
 
 const message = {
   to: 'a@example.com',
@@ -27,12 +26,10 @@ const message = {
 describe('MailService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    env.MAIL_USER = undefined;
-    env.MAIL_PASSWORD = undefined;
   });
 
   it('connects without auth and with short timeouts by default', () => {
-    new MailService();
+    new MailService(options);
     expect(createTransport).toHaveBeenCalledWith(
       expect.objectContaining({
         host: 'smtp.example.com',
@@ -44,17 +41,15 @@ describe('MailService', () => {
     );
   });
 
-  it('uses auth when both user and password are set', () => {
-    env.MAIL_USER = 'user';
-    env.MAIL_PASSWORD = 'pass';
-    new MailService();
+  it('uses auth when it is given', () => {
+    new MailService({ ...options, auth: { user: 'user', pass: 'pass' } });
     expect(vi.mocked(createTransport).mock.calls[0][0]).toMatchObject({
       auth: { user: 'user', pass: 'pass' },
     });
   });
 
-  it('sends from MAIL_FROM and passes failures on', async () => {
-    const service = new MailService();
+  it('sends from the configured address and passes failures on', async () => {
+    const service = new MailService(options);
     transport.sendMail.mockResolvedValueOnce({});
     await service.send(message);
     expect(transport.sendMail).toHaveBeenCalledWith({
@@ -67,7 +62,21 @@ describe('MailService', () => {
   });
 
   it('closes the transport on shutdown', () => {
-    new MailService().onModuleDestroy();
+    new MailService(options).onModuleDestroy();
     expect(transport.close).toHaveBeenCalled();
+  });
+});
+
+describe('MailModule.forRoot', () => {
+  it('injects the given options into MailService', async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [MailModule.forRoot({ ...options, port: 2525 })],
+    }).compile();
+
+    expect(moduleRef.get(MailService)).toBeInstanceOf(MailService);
+    expect(createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ host: 'smtp.example.com', port: 2525 }),
+    );
+    await moduleRef.close();
   });
 });

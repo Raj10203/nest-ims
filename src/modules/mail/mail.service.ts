@@ -1,23 +1,24 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
-import { createTransport } from 'nodemailer';
-import { mailEnv } from '../../config/mail-env.js';
+import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
+import { createTransport, type Transporter } from 'nodemailer';
+import { MAIL_OPTIONS, type MailOptions } from './mail.constants.js';
 
 @Injectable()
 export class MailService implements OnModuleDestroy {
-  private readonly transport = createTransport({
-    host: mailEnv.MAIL_HOST,
-    port: mailEnv.MAIL_PORT,
-    secure: mailEnv.MAIL_SECURE ?? false,
-    // Nodemailer waits 2 minutes by default, which would tie up a worker slot
-    // when the SMTP server is unreachable.
-    connectionTimeout: 10_000,
-    greetingTimeout: 10_000,
-    socketTimeout: 30_000,
-    auth:
-      mailEnv.MAIL_USER && mailEnv.MAIL_PASSWORD
-        ? { user: mailEnv.MAIL_USER, pass: mailEnv.MAIL_PASSWORD }
-        : undefined,
-  });
+  private readonly transport: Transporter;
+
+  constructor(@Inject(MAIL_OPTIONS) private readonly options: MailOptions) {
+    this.transport = createTransport({
+      host: options.host,
+      port: options.port,
+      secure: options.secure ?? false,
+      // Nodemailer waits 2 minutes by default, which would tie up a worker slot
+      // when the SMTP server is unreachable.
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 30_000,
+      auth: options.auth,
+    });
+  }
 
   async send(message: {
     to: string;
@@ -25,7 +26,7 @@ export class MailService implements OnModuleDestroy {
     text: string;
     html: string;
   }): Promise<void> {
-    await this.transport.sendMail({ from: mailEnv.MAIL_FROM, ...message });
+    await this.transport.sendMail({ from: this.options.from, ...message });
   }
 
   onModuleDestroy(): void {
