@@ -19,6 +19,9 @@ export class User extends BaseEntity {
   @Column({ type: 'timestamp', nullable: true })
   emailVerifiedAt: Date | null;
 
+  @Column({ type: 'varchar', length: 1024, nullable: true })
+  avatarUrl: string | null;
+
   @Column({ length: 255, select: false })
   password: string;
 

@@ -29,5 +29,9 @@
     "notFound": "સાઇટ {id} મળી નથી",
     "codeTaken": "આ કોડ ધરાવતી સાઇટ પહેલેથી અસ્તિત્વમાં છે",
     "inchargeRoleRequired": "વપરાશકર્તા {id} પાસે {role} ભૂમિકા નથી"
+  },
+  "files": {
+    "required": "એક ફાઇલ જરૂરી છે",
+    "tooLarge": "ફાઇલ ખૂબ મોટી છે; મહત્તમ કદ {maxKb} KB છે"
   }
 }

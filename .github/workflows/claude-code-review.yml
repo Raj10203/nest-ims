@@ -16,12 +16,186 @@ concurrency:
   group: claude-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-# The job fails unless the verdict is ✅, so a PR with open findings shows a red
-# "Claude review" check. It is not a required check: developers can still merge.
+# Both jobs fail as a warning (a red check), never as a merge block: they are not
+# required checks. "Claude review" fails unless the verdict is ✅.
 jobs:
+  # Rewrites the bot's block of the PR description for the head commit, so the
+  # review below checks the code against an up-to-date description.
+  describe:
+    name: PR description
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        id: claude
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+            BASE BRANCH: ${{ github.event.pull_request.base.ref }}
+            HEAD COMMIT: ${{ github.event.pull_request.head.sha }}
+
+            You write the release-facing part of this pull request's description, for a
+            product owner and for whoever releases it. Reviewers read the code; you do
+            NOT explain how the code works.
+
+            ## Gather
+            1. Read CLAUDE.md (deploy order, seed command, env files, services).
+            2. List the changed files: `gh pr diff ${{ github.event.pull_request.number }} --name-only`,
+               then read what you need with
+               `git diff origin/${{ github.event.pull_request.base.ref }}...HEAD -- <path>`.
+               Skip `package-lock.json` and `src/generated/`.
+            3. The current body, for context only: `gh pr view ${{ github.event.pull_request.number }} --json body --jq .body`.
+
+            ## Rules for what to declare (check every one against the diff)
+            - Schema: read every migration added or changed in `src/database/migrations/`
+              (the `up` SQL is the truth) and the entity changes in `src/entities/`. One
+              table row per changed column, index, foreign key or constraint; a whole
+              table added or dropped is one row with column "(table)". "Before" and
+              "After" give the type and nullability/default in short form
+              (`varchar(1024), null`, `int, not null, FK → users`), or "—" when it did not
+              exist / no longer exists. For a modified column, "Before" is its definition
+              on the base branch: read it with
+              `git show origin/${{ github.event.pull_request.base.ref }}:<entity file>` or from the
+              earlier migration that created it, and "After" is the new one, e.g.
+              `varchar(255), not null` → `varchar(1024), not null`. "Purpose" says in
+              plain words what it stores. "Safe with old version": Yes for additive,
+              nullable or defaulted, and widened (longer varchar, bigger int) changes; No
+              for renamed, dropped or narrowed columns and new NOT NULL columns without a
+              default.
+
+            ## Release notes: only what THIS PR needs beyond the standard deploy
+            Every deploy already builds the app, installs dependencies, runs pending
+            migrations, starts the new API and worker and checks that they are healthy.
+            Never list those, or generic checks such as "check /health" or "try the new
+            feature". List a step only when this PR causes it:
+            - Seeder: a change in `src/database/seeds/` (roles, permissions): run
+              `node dist/cli/cli.js seed` after the migrations.
+            - Configuration: a variable added or changed in `.env.example` or `src/config/`:
+              name it, the value to set and on which server (API, worker); say when it is
+              optional.
+            - Third parties: a new external service, account, key, container, bucket,
+              queue, webhook or provider (`docker-compose.yml`, `package.json`,
+              `src/config/`): what must be created or activated, and where its credentials go.
+            - A migration that is NOT safe while the old version runs: the special order or
+              maintenance window it needs.
+            - One-off manual steps the code relies on: a data fix, a backfill, a file or
+              account to create by hand.
+            - Coordination: a changed route, request or response that needs the frontend
+              or another client released at the same time.
+            - Business changes: features added, changed or removed and rules that changed
+              (who may do what, limits, what users now see or are blocked from), in plain
+              words. Group small related changes into one bullet.
+            Never invent a step. If unsure, check the files above; leave it out if the diff
+            does not show it.
+
+            ## Format
+            No file, class, function or library names except where a release step needs
+            one (a variable, a command). No code. Short bullets. Write "None." for an empty
+            section; never drop a section. Exactly this block:
+
+            <!-- auto-description:start -->
+            <!-- Generated for commit <first 7 characters of HEAD COMMIT> by the "PR description" job. Write your own notes outside this block: it is replaced on every push. -->
+
+            ## Summary
+
+            One or two sentences: what this PR delivers and why.
+
+            ## Business changes
+
+            - **New:** / **Changed:** / **Removed:** what changed, for whom.
+
+            ## Schema changes
+
+            | Table | Column | Before | After | Purpose | Safe with old version |
+            | --- | --- | --- | --- | --- | --- |
+            | users | avatarUrl | — | varchar(1024), null | Link to the user's profile picture | Yes |
+            | sites | address | varchar(255), null | varchar(1024), null | Site's street address | Yes |
+
+            (These rows only show the format: a new column and a modified one. Write
+            "None." instead of the table when no migration changed.)
+
+            ## Release notes
+
+            - [ ] **Before deploy** / **After deploy**: one PR-specific step per line, with
+                  the exact variable name or command.
+
+            <!-- auto-description:end -->
+
+            In "Release notes", write "Nothing beyond the standard deploy." when this PR
+            needs no extra step.
+
+            ## Output
+            Write only the block above, from the start marker to the end marker, to
+            /tmp/pr-block.md (never inside the repo). The next step puts it into the
+            description and keeps the author's text. Do not edit the PR and do not comment.
+            Never change the working tree, index, HEAD or branches. A denied command is
+            never a reason to stop: use an allowed tool and always write the file.
+          # Write is only for /tmp/pr-block.md; the PR itself is edited by the next step.
+          claude_args: |
+            --model claude-opus-5-5
+            --max-turns 60
+            --allowedTools "Read,Grep,Glob,Write,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git ls-files:*),Bash(head:*),Bash(tail:*),Bash(wc:*)"
+
+      - name: Show denied tool calls
+        if: always() && steps.claude.outputs.execution_file != ''
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          jq -r '.[] | select(.type == "result") | .permission_denials[]?
+            | "\(.tool_name): \(.tool_input.command // .tool_input.file_path // "")"' \
+            "$EXECUTION_FILE" || true
+
+      # Swaps the bot's block in the description, keeping the author's text; the
+      # first time, the old body moves below the block under "Author notes".
+      - name: Update the PR description
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          short="${SHA:0:7}"
+          if ! grep -q "Generated for commit $short" /tmp/pr-block.md 2>/dev/null \
+            || ! grep -q '<!-- auto-description:end -->' /tmp/pr-block.md; then
+            echo "::error::Claude did not write a description block for $short. See 'Show denied tool calls'."
+            exit 1
+          fi
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq .body > /tmp/pr-old.md
+          python3 - <<'PY'
+          import re
+          block = open('/tmp/pr-block.md').read().strip()
+          block = block[block.index('<!-- auto-description:start -->'):]
+          block = block[:block.index('<!-- auto-description:end -->') + len('<!-- auto-description:end -->')]
+          old = open('/tmp/pr-old.md').read().strip()
+          pattern = re.compile(r'<!-- auto-description:start -->.*?<!-- auto-description:end -->', re.S)
+          if pattern.search(old):
+              body = pattern.sub(lambda _: block, old, count=1)
+          elif old:
+              body = f'{block}\n\n## Author notes\n\n{old}'
+          else:
+              body = block
+          open('/tmp/pr-body.md', 'w').write(body + '\n')
+          PY
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --body-file /tmp/pr-body.md
+          echo "Description updated for $short"
+
   review:
     name: Claude review
-    if: github.event.pull_request.draft == false
+    # After the description, even if writing it failed.
+    needs: describe
+    if: ${{ !cancelled() && github.event.pull_request.draft == false }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -53,7 +227,8 @@ jobs:
                schema change, backward-compatible migrations, at-least-once job handlers,
                secret masking in logs, comment style).
             2. The PR description: `gh pr view ${{ github.event.pull_request.number }} --json title,body`.
-               It is what this PR is reviewed against.
+               The block between `<!-- auto-description:start -->` and `end` was written
+               from this diff by a bot just before you; text outside it is the author's.
 
             ## Review
             Review the WHOLE pull request every time, not only the latest commit, and
@@ -65,10 +240,13 @@ jobs:
             1. Get the diff with `gh pr diff ${{ github.event.pull_request.number }}`. Use
                `git diff`, `git log` and `git show` against `origin/${{ github.event.pull_request.base.ref }}`
                and read each changed file around the change before commenting on it.
-            2. Intent: does the code match the description? Check its "Database changes",
-               "Breaking changes" and "Before release" sections against the diff in both
-               directions, and flag anything undeclared or declared but missing. An empty
-               or weak description is Minor, never a reason to block the merge.
+            2. Intent: does the code match the description? Check its "Schema changes"
+               and "Release notes" sections against the diff in both directions. A
+               missing PR-specific release step (seed run, env variable, third-party
+               setup, unsafe migration, manual data fix) is Important; routine deploy
+               steps (build, migrations, restarts, health checks) must not be listed
+               there. Other gaps in the description are Minor, never a reason to block
+               the merge.
             3. Correctness and security: logic errors, edge cases, race conditions,
                unawaited promises, auth and permission checks, data leaking into logs or
                responses, migrations that would break the version still running.
@@ -78,10 +256,10 @@ jobs:
                does not touch, specs, the CLI and the worker), and read each caller.
                Check that every caller still works with the new signature, arguments,
                return value, thrown errors, loaded relations and side effects. Also
-               check API clients: a changed route, status code, request field or
-               response field is a breaking change and must be declared in the
-               description. A caller this PR breaks is this PR's issue; name the
-               caller's `path:line` in the finding.
+               check API clients: name every changed route, status code, request field
+               or response field in "Merge notes" so clients can be updated (it is not
+               a finding by itself). A caller this PR breaks is this PR's issue; name
+               the caller's `path:line` in the finding.
             5. Tests: new behaviour without a test.
             Do not flag formatting or lint issues (Prettier and oxlint cover them), or
             problems in code the PR does not touch, unless this PR's change breaks it
@@ -130,8 +308,8 @@ jobs:
             behaviour in normal use.
 
             **Important (should fix)**: a verified failure in a realistic edge case (error
-            path, concurrency, undeclared breaking change, migration that breaks the
-            running version), or risky new logic with no test at all.
+            path, concurrency, a caller in this repo broken by the change, migration that
+            breaks the running version), or risky new logic with no test at all.
 
             **Minor**: small improvements worth a mention. They never block the merge.
 

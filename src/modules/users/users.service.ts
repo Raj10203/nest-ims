@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { subject } from '@casl/ability';
 import {
   ConflictException,
@@ -17,6 +18,7 @@ import {
 } from '../authorization/casl-ability.factory.js';
 import { RolesService } from '../roles/roles.service.js';
 import { SitesService } from '../sites/sites.service.js';
+import { BlobStorageService } from '../storage/blob-storage.service.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
@@ -32,6 +34,7 @@ export class UsersService {
     @Inject(forwardRef(() => SitesService))
     // Pick: see the matching constructor in SitesService.
     private readonly sitesService: Pick<SitesService, 'isInchargeOfAnySite'>,
+    private readonly storage: BlobStorageService,
   ) {}
 
   async create(actor: User, dto: CreateUserDto): Promise<User> {
@@ -122,6 +125,37 @@ export class UsersService {
       throw new ConflictException(i18nMessage('errors.users.inchargeOfSite'));
     }
     await this.users.delete(id);
+    if (target.avatarUrl) await this.storage.deleteByUrl(target.avatarUrl);
+  }
+
+  async setAvatar(
+    actor: User,
+    id: number,
+    file: { buffer: Buffer; mimetype: string },
+  ): Promise<User> {
+    const target = await this.findAvatarOwner(actor, id);
+    const avatarUrl = await this.storage.upload(
+      `users/${id}/${randomUUID()}`,
+      file.buffer,
+      file.mimetype,
+    );
+    await this.users.update(id, { avatarUrl });
+    if (target.avatarUrl) await this.storage.deleteByUrl(target.avatarUrl);
+    return this.findOneOrFail(id);
+  }
+
+  async removeAvatar(actor: User, id: number): Promise<void> {
+    const target = await this.findAvatarOwner(actor, id);
+    if (!target.avatarUrl) return;
+    await this.users.update(id, { avatarUrl: null });
+    await this.storage.deleteByUrl(target.avatarUrl);
+  }
+
+  // Anyone may change their own avatar; another user's needs the update rule.
+  private async findAvatarOwner(actor: User, id: number): Promise<User> {
+    const target = await this.findOneOrFail(id);
+    if (actor.id !== id) this.assertCan(actor, 'update', target);
+    return target;
   }
 
   // --- used by the auth module ---

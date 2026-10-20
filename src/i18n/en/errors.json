@@ -29,5 +29,9 @@
     "notFound": "Site {id} not found",
     "codeTaken": "A site with this code already exists",
     "inchargeRoleRequired": "User {id} does not have the {role} role"
+  },
+  "files": {
+    "required": "A file is required",
+    "tooLarge": "The file is too large; the maximum is {maxKb} KB"
   }
 }
