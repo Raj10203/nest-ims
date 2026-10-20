@@ -16,6 +16,9 @@ services:
       DB_USER: user
       DB_PASSWORD: password
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-ims}:${RABBITMQ_PASSWORD:-ims}@rabbitmq:5672
+      # Only for GET /health (the worker sends the mail)
+      MAIL_HOST: mailpit
+      MAIL_PORT: 1025
     depends_on:
       mysql:
         condition: service_healthy

@@ -13,6 +13,7 @@ import { User } from '../../entities/user.entity.js';
 import { UsersService } from '../users/users.service.js';
 import { ALLOW_UNVERIFIED_EMAIL } from './allow-unverified-email.decorator.js';
 import { IS_PUBLIC } from './public.decorator.js';
+import { i18nMessage } from '../../common/i18n/i18n-message.js';
 
 // Registered globally (APP_GUARD): every route needs a valid access token
 // unless it is marked @Public(), and the user's email must be verified unless
@@ -37,7 +38,9 @@ export class JwtAuthGuard implements CanActivate {
       .getRequest<Request & { user?: User }>();
     const [scheme, token] = request.headers.authorization?.split(' ') ?? [];
     if (scheme !== 'Bearer' || !token) {
-      throw new UnauthorizedException('Missing bearer token');
+      throw new UnauthorizedException(
+        i18nMessage('errors.auth.missingBearerToken'),
+      );
     }
 
     let userId: number;
@@ -47,18 +50,23 @@ export class JwtAuthGuard implements CanActivate {
       });
       userId = payload.sub;
     } catch {
-      throw new UnauthorizedException('Invalid or expired access token');
+      throw new UnauthorizedException(
+        i18nMessage('errors.auth.invalidAccessToken'),
+      );
     }
 
     // Loaded fresh so role / permission changes apply immediately.
     const user = await this.users.findById(userId);
-    if (!user) throw new UnauthorizedException('User no longer exists');
+    if (!user)
+      throw new UnauthorizedException(
+        i18nMessage('errors.auth.userNoLongerExists'),
+      );
 
     const allowUnverified = this.reflector.getAllAndOverride<
       boolean | undefined
     >(ALLOW_UNVERIFIED_EMAIL, [context.getHandler(), context.getClass()]);
     if (!user.emailVerifiedAt && !allowUnverified) {
-      throw new ForbiddenException('Email is not verified');
+      throw new ForbiddenException(i18nMessage('errors.auth.emailNotVerified'));
     }
 
     request.user = user;

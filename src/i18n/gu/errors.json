@@ -1,0 +1,33 @@
+{
+  "validationFailed": "ચકાસણી નિષ્ફળ ગઈ",
+  "tooManyRequests": "ઘણી બધી વિનંતીઓ, કૃપા કરીને થોડી વાર પછી ફરી પ્રયાસ કરો",
+  "forbidden": "તમને આ ક્રિયા કરવાની પરવાનગી નથી",
+  "auth": {
+    "invalidCredentials": "અમાન્ય ઇમેઇલ અથવા પાસવર્ડ",
+    "invalidRefreshToken": "અમાન્ય અથવા સમાપ્ત થયેલ રિફ્રેશ ટોકન",
+    "missingBearerToken": "બેરર ટોકન મળ્યું નથી",
+    "invalidAccessToken": "અમાન્ય અથવા સમાપ્ત થયેલ ઍક્સેસ ટોકન",
+    "userNoLongerExists": "આ વપરાશકર્તા હવે અસ્તિત્વમાં નથી",
+    "emailNotVerified": "ઇમેઇલ ચકાસાયેલ નથી"
+  },
+  "otp": {
+    "format": "OTP 6 અંકનો હોવો જોઈએ",
+    "expiredOrNotRequested": "OTP ની સમયમર્યાદા પૂરી થઈ ગઈ છે અથવા તેની વિનંતી કરવામાં આવી નથી",
+    "tooManyAttempts": "ઘણા બધા પ્રયાસો, નવો OTP મંગાવો",
+    "invalid": "અમાન્ય OTP",
+    "alreadyVerified": "ઇમેઇલ પહેલેથી ચકાસાયેલ છે",
+    "resendCooldown": "બીજો કોડ મંગાવતા પહેલાં {seconds} સેકન્ડ રાહ જુઓ"
+  },
+  "users": {
+    "notFound": "વપરાશકર્તા {id} મળ્યો નથી",
+    "roleNotFound": "ભૂમિકા {id} અસ્તિત્વમાં નથી",
+    "cannotCreateWithRole": "તમને \"{role}\" ભૂમિકા ધરાવતો વપરાશકર્તા બનાવવાની પરવાનગી નથી",
+    "emailTaken": "આ ઇમેઇલ ધરાવતો વપરાશકર્તા પહેલેથી અસ્તિત્વમાં છે",
+    "inchargeOfSite": "આ વપરાશકર્તા એક સાઇટનો પ્રભારી છે; પહેલાં બીજા પ્રભારીની નિમણૂક કરો"
+  },
+  "sites": {
+    "notFound": "સાઇટ {id} મળી નથી",
+    "codeTaken": "આ કોડ ધરાવતી સાઇટ પહેલેથી અસ્તિત્વમાં છે",
+    "inchargeRoleRequired": "વપરાશકર્તા {id} પાસે {role} ભૂમિકા નથી"
+  }
+}

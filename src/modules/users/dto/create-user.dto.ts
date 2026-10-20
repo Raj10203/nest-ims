@@ -1,13 +1,25 @@
 import { z } from 'zod';
-import { createZodDto } from '../../../common/zod/create-zod-dto.js';
 
+// Every field has an example, so the body Swagger builds from them passes this
+// schema; swagger-examples.spec.ts checks it. The docs page swaps in a fresh
+// email and the site_technician role id on each load (common/swagger).
 export const createUserSchema = z.object({
-  firstName: z.string().trim().min(1).max(100),
-  middleName: z.string().trim().min(1).max(100).nullish(),
-  lastName: z.string().trim().min(1).max(100),
-  email: z.email().max(255).toLowerCase(),
-  password: z.string().min(8).max(128),
-  roleId: z.number().int().positive(),
+  firstName: z.string().trim().min(1).max(100).meta({ example: 'Jane' }),
+  middleName: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .nullish()
+    .meta({ example: null }),
+  lastName: z.string().trim().min(1).max(100).meta({ example: 'Doe' }),
+  email: z
+    .email()
+    .max(255)
+    .toLowerCase()
+    .meta({ example: 'jane.doe@example.com' }),
+  password: z.string().min(8).max(128).meta({ example: 'Password123!' }),
+  roleId: z.number().int().positive().meta({ example: 5 }),
 });
 
-export class CreateUserDto extends createZodDto(createUserSchema) {}
+export type CreateUserDto = z.output<typeof createUserSchema>;

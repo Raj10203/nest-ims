@@ -18,14 +18,26 @@ describe('App (e2e)', () => {
     await app.init();
   });
 
-  it('serves the health check without the api prefix', () => {
+  it('serves the liveness check without the api prefix', () => {
     return request(app.getHttpServer())
-      .get('/health')
+      .get('/health/live')
       .expect(200)
       .expect({ status: 'ok' });
   });
 
-  it('does not serve the health check under /api', () => {
+  it('reports each dependency separately on /health', async () => {
+    const { status, body } = await request(app.getHttpServer()).get('/health');
+    // 503 is valid too: the report is what matters, whatever is running.
+    expect([200, 503]).toContain(status);
+    expect(Object.keys(body.details)).toEqual(
+      expect.arrayContaining(['database', 'rabbitmq', 'worker']),
+    );
+    for (const service of Object.values<{ status: string }>(body.details)) {
+      expect(['up', 'down']).toContain(service.status);
+    }
+  });
+
+  it('does not serve the health checks under /api', () => {
     return request(app.getHttpServer()).get('/api/health').expect(404);
   });
 
@@ -37,6 +49,19 @@ describe('App (e2e)', () => {
       .post('/api/auth/login')
       .send({})
       .expect(400);
+  });
+
+  it('answers in the requested language', async () => {
+    const { body } = await request(app.getHttpServer())
+      .get('/api/users')
+      .set('Accept-Language', 'hi');
+    expect(body.message).toBe('बेयरर टोकन नहीं मिला');
+  });
+
+  it('sets security headers', async () => {
+    const { headers } = await request(app.getHttpServer()).get('/health/live');
+    expect(headers['x-content-type-options']).toBe('nosniff');
+    expect(headers['content-security-policy']).toContain("default-src 'self'");
   });
 
   afterEach(async () => {

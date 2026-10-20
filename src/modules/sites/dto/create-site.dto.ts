@@ -1,14 +1,44 @@
 import { z } from 'zod';
-import { createZodDto } from '../../../common/zod/create-zod-dto.js';
 
+// Every field has an example (or a default), so the body Swagger builds from
+// them passes this schema; swagger-examples.spec.ts checks it.
 export const createSiteSchema = z.object({
-  name: z.string().trim().min(1).max(150),
-  code: z.string().trim().min(1).max(50).toUpperCase(),
-  address: z.string().trim().min(1).max(255).nullish(),
-  city: z.string().trim().min(1).max(100).nullish(),
-  state: z.string().trim().min(1).max(100).nullish(),
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(150)
+    .meta({ example: 'Ahmedabad Warehouse' }),
+  code: z
+    .string()
+    .trim()
+    .min(1)
+    .max(50)
+    .toUpperCase()
+    .meta({ example: 'AMD-01' }),
+  address: z
+    .string()
+    .trim()
+    .min(1)
+    .max(255)
+    .nullish()
+    .meta({ example: '12 Ring Road' }),
+  city: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .nullish()
+    .meta({ example: 'Ahmedabad' }),
+  state: z
+    .string()
+    .trim()
+    .min(1)
+    .max(100)
+    .nullish()
+    .meta({ example: 'Gujarat' }),
   isActive: z.boolean().default(true),
-  inchargeId: z.number().int().positive().nullish(),
+  inchargeId: z.number().int().positive().nullish().meta({ example: null }),
 });
 
-export class CreateSiteDto extends createZodDto(createSiteSchema) {}
+export type CreateSiteDto = z.output<typeof createSiteSchema>;

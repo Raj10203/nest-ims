@@ -126,7 +126,7 @@ describe('EmailVerificationService', () => {
       emailOtpAttempts: 0,
     });
     await expect(service.verifyOtp(user, '654321')).rejects.toThrow(
-      'Invalid OTP',
+      'errors.otp.invalid',
     );
     expect(increment).toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
@@ -150,7 +150,7 @@ describe('EmailVerificationService', () => {
       emailOtpAttempts: OTP_MAX_ATTEMPTS,
     });
     await expect(service.verifyOtp(user, '123456')).rejects.toThrow(
-      'Too many attempts',
+      'errors.otp.tooManyAttempts',
     );
     expect(update).not.toHaveBeenCalled();
   });

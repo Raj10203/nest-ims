@@ -51,6 +51,10 @@ export class RabbitMqConnection implements OnApplicationShutdown {
     );
   }
 
+  isConnected(): boolean {
+    return this.connection.isConnected();
+  }
+
   createChannel(): ChannelWrapper {
     const channel = this.connection.createChannel({ setup: assertTopology });
     // A failed setup is emitted as 'error'; with no listener, EventEmitter throws
