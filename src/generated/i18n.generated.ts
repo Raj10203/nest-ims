@@ -40,6 +40,8 @@ export type I18nTranslations = {
         "files": {
             "required": string;
             "tooLarge": string;
+            "invalidType": string;
+            "invalidImage": string;
         };
         "invite": {
             "invalid": string;

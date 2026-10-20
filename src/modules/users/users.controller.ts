@@ -1,12 +1,10 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
   HttpCode,
   Param,
-  ParseFilePipe,
   Patch,
   Post,
   Put,
@@ -21,7 +19,6 @@ import {
   ApiConsumes,
   ApiOperation,
 } from '@nestjs/swagger';
-import { i18nMessage } from '../../common/i18n/i18n-message.js';
 import { idParamSchema } from '../../common/zod/id-param.schema.js';
 import { User } from '../../entities/user.entity.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
@@ -35,6 +32,7 @@ import {
 import { updateUserSchema, type UpdateUserDto } from './dto/update-user.dto.js';
 import {
   AVATAR_MAX_BYTES,
+  avatarFilePipe,
   AvatarUploadInterceptor,
 } from './avatar-upload.interceptor.js';
 import { UsersService } from './users.service.js';
@@ -89,7 +87,7 @@ export class UsersController {
   }
 
   @ApiOperation({
-    summary: `Upload an avatar for yourself or a user you may update (max ${AVATAR_MAX_BYTES / 1024} KB)`,
+    summary: `Upload a PNG or JPEG avatar for yourself or a user you may update (max ${AVATAR_MAX_BYTES / 1024} KB)`,
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -107,13 +105,7 @@ export class UsersController {
   setAvatar(
     @CurrentUser() actor: User,
     @Param('id', { schema: idParamSchema }) id: number,
-    @UploadedFile(
-      new ParseFilePipe({
-        exceptionFactory: () =>
-          new BadRequestException(i18nMessage('errors.files.required')),
-      }),
-    )
-    file: Express.Multer.File,
+    @UploadedFile(avatarFilePipe()) file: Express.Multer.File,
   ) {
     return this.usersService.setAvatar(actor, id, file);
   }

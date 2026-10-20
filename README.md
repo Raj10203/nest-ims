@@ -173,7 +173,11 @@ flowchart LR
 
 - `PUT /api/users/:id/avatar` with a multipart `file` field uploads an avatar for yourself (any role) or for a user you may update (404 otherwise, like every out-of-scope user). The file goes to Azure Blob Storage as `users/<id>/<uuid>` with the client's content type, and its public URL is saved in `users.avatarUrl`. The previous blob is deleted (best effort), and so is the avatar when the user is deleted. `DELETE /api/users/:id/avatar` (same rule, 204, safe to repeat) clears `avatarUrl` and deletes the blob.
 - A user without an avatar has `avatarUrl: null`; it is optional at creation. The API never returns a default image: clients render their own placeholder (initials or a neutral silhouette), so the placeholder design can change without touching data.
-- The only check is a **500 KB size limit** (`AVATAR_MAX_BYTES`). The API neither checks the file type nor resizes: the client sends a ready image. Multer stops reading at the limit, so an oversized upload is answered with a translated 413 without being held in memory.
+- Checks, in order (the API never resizes or re-encodes: the client sends a ready image):
+  1. **Size:** at most 500 KB (`AVATAR_MAX_BYTES`). Multer stops reading at the limit, so an oversized upload gets a 413 without being held in memory.
+  2. **Type from the bytes:** PNG or JPEG only, detected from the file's magic numbers, not the client's `Content-Type`; the detected type is what the blob is stored and served with. Otherwise 415.
+  3. **Content** (`ImageContentValidator`, `common/files/`, reusable for other image uploads): nothing may follow the image's end marker (the PNG chunks and JPEG segments are walked, so polyglot files with appended HTML, scripts or archives are refused), the dimensions may not exceed 4096 × 4096 (read from the header before decoding, against decompression bombs), and every pixel must decode in strict mode (truncated or corrupt data fails). Otherwise 422.
+  All messages are translated.
 - `StorageModule` is built with `ConfigurableModuleBuilder` (`forRoot` / `forRootAsync`) and is global, so any feature can inject `BlobStorageService`. Development uses the **Azurite** emulator from docker-compose; production gets a real storage account through the same `AZURE_STORAGE_*` variables, with no code change. `AZURE_STORAGE_PUBLIC_URL` replaces the endpoint in stored URLs, because inside Docker the emulator is `http://azurite:10000`, which the browser cannot reach.
 - The container is created on the first upload with anonymous read access for blobs, so stored URLs work without a token.
 
@@ -391,7 +395,7 @@ sequenceDiagram
 | zod schema on the parameter (`@Body({ schema })`) | One schema validates the request and documents it in Swagger; examples are tested against it |
 | Translation keys in exceptions, translated in one filter | Services stay language-agnostic and tests assert keys; adding a language is a folder of JSON files plus its zod locale |
 | Avatars in Azure Blob Storage, URL on the user | The API never serves image bytes; browsers and CDNs load them directly. Blob names are unique, so they are cached for a year and replacing an avatar never shows a stale image |
-| Only a size limit on uploads, enforced while streaming | The client sends a ready image; Multer stops reading at 500 KB, so a large upload never fills memory |
+| Avatars: size, type from bytes, then full content check; no re-encoding | Each layer stops a different attack (memory, renamed files, polyglots and bombs) while the client keeps control of the image it sends |
 | `/health` reports, `/health/live` is the probe | Ops see exactly which dependency is down; a dependency outage does not get the API container restarted |
 | Invitation link instead of an emailed password | No password ever sits in a mailbox, a queue message or an admin's head; accepting the link also verifies the email |
 | `user.created` event for invitations | Users stay unaware of invitations and mail; a failed send never fails user creation |

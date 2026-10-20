@@ -32,7 +32,9 @@
   },
   "files": {
     "required": "A file is required",
-    "tooLarge": "The file is too large; the maximum is {maxKb} KB"
+    "tooLarge": "The file is too large; the maximum is {maxKb} KB",
+    "invalidType": "Only PNG and JPEG images are allowed",
+    "invalidImage": "The image is damaged, contains extra data, or is larger than {maxPx} × {maxPx} pixels"
   },
   "invite": {
     "invalid": "This invitation link is invalid, already used or expired",
