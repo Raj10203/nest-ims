@@ -14,6 +14,7 @@ import {
 } from '../../common/security/secret-hash.js';
 import { env } from '../../config/env.js';
 import { User } from '../../entities/user.entity.js';
+import { AuditService } from '../audit/audit.service.js';
 import { JobQueueService } from '../jobs/job-queue.service.js';
 import { UsersService } from '../users/users.service.js';
 import { INVITE_PATH, INVITE_TTL_HOURS } from './invitation.constants.js';
@@ -24,6 +25,7 @@ export class InvitationsService {
     @InjectRepository(User) private readonly users: Repository<User>,
     private readonly usersService: UsersService,
     private readonly jobs: JobQueueService,
+    private readonly audit: AuditService,
   ) {}
 
   // Each call replaces the stored token, so only the latest link works.
@@ -72,18 +74,38 @@ export class InvitationsService {
     assertPasswordAvoidsNames(password, [user.firstName, user.lastName]);
 
     const passwordHash = await hashSecret(password);
-    // Conditional UPDATE: concurrent requests cannot both use the link.
-    const { affected } = await this.users.update(
-      { id: user.id, ...valid },
-      {
-        password: passwordHash,
-        inviteTokenHash: null,
-        inviteExpiresAt: null,
-        emailVerifiedAt: new Date(),
-      },
-    );
-    if (!affected) {
-      throw new BadRequestException(i18nMessage('errors.invite.invalid'));
-    }
+    const emailVerifiedAt = new Date();
+    await this.users.manager.transaction(async (manager) => {
+      // Conditional UPDATE: concurrent requests cannot both use the link. The
+      // audit subscriber cannot see such an update, so the entry is explicit.
+      const { affected } = await manager.update(
+        User,
+        { id: user.id, ...valid },
+        {
+          password: passwordHash,
+          inviteTokenHash: null,
+          inviteExpiresAt: null,
+          emailVerifiedAt,
+        },
+      );
+      if (!affected) {
+        throw new BadRequestException(i18nMessage('errors.invite.invalid'));
+      }
+      await this.audit.record(
+        {
+          action: 'update',
+          entityType: 'User',
+          entityId: String(user.id),
+          oldValues: { password: null, emailVerifiedAt: null },
+          newValues: {
+            password: passwordHash,
+            emailVerifiedAt: emailVerifiedAt.toISOString(),
+          },
+          // No session yet: the invited user acts on their own account.
+          actorId: user.id,
+        },
+        manager,
+      );
+    });
   }
 }

@@ -1,4 +1,5 @@
 import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
+import { NotAudited } from '../common/audit/not-audited.decorator.js';
 import { BaseEntity } from './base.entity.js';
 import { Role } from './role.entity.js';
 
@@ -27,35 +28,44 @@ export class User extends BaseEntity {
   password: string | null;
 
   // SHA-256 of the invitation link's token (looked up by hash; see hashToken).
+  @NotAudited()
   @Index()
   @Column({ type: 'char', length: 64, nullable: true, select: false })
   inviteTokenHash: string | null;
 
+  @NotAudited()
   @Column({ type: 'timestamp', nullable: true, select: false })
   inviteExpiresAt: Date | null;
 
   @Column({ default: false })
   mfaEnabled: boolean;
 
+  @NotAudited()
   @Column({ type: 'varchar', length: 255, nullable: true, select: false })
   mfaOtpHash: string | null;
 
+  @NotAudited()
   @Column({ type: 'timestamp', nullable: true, select: false })
   mfaOtpExpiresAt: Date | null;
 
+  @NotAudited()
   @Column({ type: 'int', default: 0, select: false })
   mfaOtpAttempts: number;
 
+  @NotAudited()
   @Column({ type: 'varchar', length: 255, nullable: true, select: false })
   emailOtpHash: string | null;
 
+  @NotAudited()
   @Column({ type: 'timestamp', nullable: true, select: false })
   emailOtpExpiresAt: Date | null;
 
+  @NotAudited()
   @Column({ type: 'int', default: 0, select: false })
   emailOtpAttempts: number;
 
   // Hash of the latest issued refresh token; null when logged out.
+  @NotAudited()
   @Column({ type: 'varchar', length: 255, nullable: true, select: false })
   refreshTokenHash: string | null;
 

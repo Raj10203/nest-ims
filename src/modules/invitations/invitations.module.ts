@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { User } from '../../entities/user.entity.js';
+import { AuditModule } from '../audit/audit.module.js';
 import { AuthorizationModule } from '../authorization/authorization.module.js';
 import { JobsModule } from '../jobs/jobs.module.js';
 import { UsersModule } from '../users/users.module.js';
@@ -16,6 +17,7 @@ import { InvitationListener } from './invitation.listener.js';
     UsersModule,
     JobsModule,
     AuthorizationModule,
+    AuditModule,
   ],
   controllers: [InvitationsController],
   providers: [InvitationsService, InvitationListener],

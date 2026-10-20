@@ -47,6 +47,7 @@
     "keyv": "^6.1.0",
     "mysql2": "^3.24.5",
     "nest-commander": "^3.21.0",
+    "nestjs-cls": "^7.0.1",
     "nestjs-i18n": "^10.8.5",
     "nestjs-pino": "^5.3.1",
     "nodemailer": "^10.1.1",

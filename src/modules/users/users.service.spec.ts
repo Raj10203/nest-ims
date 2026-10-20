@@ -38,6 +38,8 @@ function setup() {
     },
     existsBy: vi.fn().mockResolvedValue(false),
     update: vi.fn().mockResolvedValue(undefined),
+    save: vi.fn().mockResolvedValue(undefined),
+    remove: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
   };
   const sites = { isInchargeOfAnySite: vi.fn().mockResolvedValue(false) };
@@ -68,7 +70,8 @@ describe('UsersService.update', () => {
       role: { level: 20 },
     });
     await service.update(admin, 2, { email: 'new@example.com' });
-    expect(users.update).toHaveBeenCalledWith(2, {
+    expect(users.save).toHaveBeenCalledWith({
+      id: 2,
       email: 'new@example.com',
       emailVerifiedAt: null,
       emailOtpHash: null,
@@ -86,7 +89,7 @@ describe('UsersService.update', () => {
   it('keeps verification when the email is unchanged', async () => {
     const { service, users, events } = setup();
     await service.update(admin, 2, { firstName: 'Ann' });
-    expect(users.update).toHaveBeenCalledWith(2, { firstName: 'Ann' });
+    expect(users.save).toHaveBeenCalledWith({ id: 2, firstName: 'Ann' });
     expect(events.emit).not.toHaveBeenCalled();
   });
 });
@@ -116,13 +119,15 @@ describe('UsersService.remove', () => {
     const { service, users, sites } = setup();
     sites.isInchargeOfAnySite.mockResolvedValue(true);
     await expect(service.remove(admin, 2)).rejects.toThrow(ConflictException);
-    expect(users.delete).not.toHaveBeenCalled();
+    expect(users.remove).not.toHaveBeenCalled();
   });
 
   it('deletes a user who is not in charge of any site', async () => {
     const { service, users } = setup();
     await service.remove(admin, 2);
-    expect(users.delete).toHaveBeenCalledWith(2);
+    expect(users.remove).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 2 }),
+    );
   });
 });
 
@@ -149,7 +154,8 @@ describe('UsersService.setAvatar', () => {
       file.buffer,
       'image/png',
     );
-    expect(users.update).toHaveBeenCalledWith(2, {
+    expect(users.save).toHaveBeenCalledWith({
+      id: 2,
       avatarUrl: 'https://blob.test/avatars/new',
     });
     expect(storage.deleteByUrl).toHaveBeenCalledWith(
@@ -189,7 +195,7 @@ describe('UsersService.removeAvatar', () => {
       avatarUrl: 'https://blob.test/avatars/old',
     });
     await service.removeAvatar(self, 2);
-    expect(users.update).toHaveBeenCalledWith(2, { avatarUrl: null });
+    expect(users.save).toHaveBeenCalledWith({ id: 2, avatarUrl: null });
     expect(storage.deleteByUrl).toHaveBeenCalledWith(
       'https://blob.test/avatars/old',
     );
@@ -199,7 +205,7 @@ describe('UsersService.removeAvatar', () => {
     const { service, users, storage } = setup();
     users.findOne.mockResolvedValue({ id: 2, avatarUrl: null });
     await service.removeAvatar(self, 2);
-    expect(users.update).not.toHaveBeenCalled();
+    expect(users.save).not.toHaveBeenCalled();
     expect(storage.deleteByUrl).not.toHaveBeenCalled();
   });
 });

@@ -7,7 +7,9 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
+import { ClsService } from 'nestjs-cls';
 import type { Request } from 'express';
+import type { AppClsStore } from '../../common/context/app-cls.js';
 import { env } from '../../config/env.js';
 import { User } from '../../entities/user.entity.js';
 import { UsersService } from '../users/users.service.js';
@@ -25,6 +27,7 @@ export class JwtAuthGuard implements CanActivate {
     private readonly reflector: Reflector,
     private readonly jwt: JwtService,
     private readonly users: UsersService,
+    private readonly cls: ClsService<AppClsStore>,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -74,6 +77,7 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     request.user = user;
+    this.cls.set('actor', { id: user.id, role: user.role.name });
     return true;
   }
 }
