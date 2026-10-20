@@ -295,19 +295,23 @@ sequenceDiagram
     VM->>VM: Run migrations, then start new container
 ```
 
-**1. Pull request review (`.github/workflows/claude-code-review.yml`)**
-- Runs on every PR that is **ready for review** (not drafts), and again on every new push to that PR; a newer push cancels the review still running.
+**1. PR description (`describe` job in `.github/workflows/claude-code-review.yml`)**
+- Runs first on every push to a PR that is ready for review. Claude (Opus 5.5) reads the diff and writes the release-facing part of the description, for a product owner and whoever releases it, with no code details: **Summary**, **Business changes** (new, changed or removed features and rules, in plain words), **Schema changes** (and whether they are safe while the old version runs), **Breaking changes** and **Release notes** split into before, during and after deploy (variables to set, third-party accounts or containers to create, migrations, the seed command when roles or permissions changed, restarts).
+- It only writes that block to a file; a script step swaps it into the description between `<!-- auto-description:start -->` and `<!-- auto-description:end -->`. Anything written outside the block is kept on every push; on the first run, an existing description moves below it under "Author notes". The job fails (a warning, not a merge block) if no block was produced for the head commit.
+
+**2. Pull request review (`.github/workflows/claude-code-review.yml`)**
+- Runs after the description job on every PR that is **ready for review** (not drafts), and again on every new push to that PR; a newer push cancels the run still in progress. It checks the description's schema changes and release notes against the diff: a missing migration, seed, variable or third-party step is an Important finding.
 - Claude reads `CLAUDE.md` and the PR description, reviews the **whole diff**, traces **every caller of each changed method, helper, entity or response shape** (also in files the PR does not touch) to catch breakage in existing APIs, and posts one comment: issues bucketed as Critical / Important / Minor, merge notes (migrations, env vars, restarts) and a verdict (✅ mergeable, ⚠️ mergeable with fixes, ❌ not mergeable).
 - It is **read-only** (no checkout, commit or edits) and tuned to avoid noise: "No issues found" is a normal result.
 - Runs on **Claude Opus 5.5** (up to 100 turns, 40-minute timeout) so large PRs get a full review; for big diffs it reads file by file and skips `package-lock.json` and generated files.
 - **Merge warning:** the job, shown as the **Claude review** check, passes only when the review of the head commit says ✅ **Mergeable** (risk low). It fails on ⚠️ **Mergeable with fixes** (risk medium), on ❌ **Not mergeable** (risk high), and when no review comment was posted at all (the action itself reports success either way). It is deliberately **not a required check**: a failing review shows a red check and "Some checks were not successful" on the PR, but developers can still merge. A "Show denied tool calls" step lists any command Claude tried that is not on the allowlist; the full transcript stays off because the repository is public.
 - Docs, CI files and lockfile-only changes are skipped.
 
-**2. Build and push (`.github/workflows/ci-cd.yml`)**
+**3. Build and push (`.github/workflows/ci-cd.yml`)**
 - Runs on every push to `master`.
 - Builds the production image and pushes it to Docker Hub tagged with both the commit SHA (immutable, used for deploys and rollbacks) and `latest`.
 
-**3. Continuous delivery (`azure-pipelines.yml`)**
+**4. Continuous delivery (`azure-pipelines.yml`)**
 - Started from GitHub with the commit SHA as the `imageTag` parameter (manual trigger only, no CI trigger of its own).
 - Runs on a self-hosted agent pool and connects to the Azure VM over SSH.
 - The VM deploy script pulls `<dockerhub-user>/nest-ims:<sha>`, **runs the migrations**, then replaces the running container with the new image.
