@@ -20,6 +20,8 @@ import { SitesService } from '../sites/sites.service.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
+import { i18nMessage } from '../../common/i18n/i18n-message.js';
+import { depthOne } from '../../common/typeorm/depth-one.js';
 
 @Injectable()
 export class UsersService {
@@ -34,7 +36,10 @@ export class UsersService {
 
   async create(actor: User, dto: CreateUserDto): Promise<User> {
     const role = await this.roles.findById(dto.roleId);
-    if (!role) throw new NotFoundException(`Role ${dto.roleId} does not exist`);
+    if (!role)
+      throw new NotFoundException(
+        i18nMessage('errors.users.roleNotFound', { id: dto.roleId }),
+      );
 
     const ability = this.abilityFactory.createForUser(actor);
     const candidate = subject('User', {
@@ -43,12 +48,12 @@ export class UsersService {
     });
     if (!ability.can('create', candidate)) {
       throw new ForbiddenException(
-        `You are not allowed to create a user with role "${role.name}"`,
+        i18nMessage('errors.users.cannotCreateWithRole', { role: role.name }),
       );
     }
 
     if (await this.users.existsBy({ email: dto.email })) {
-      throw new ConflictException('A user with this email already exists');
+      throw new ConflictException(i18nMessage('errors.users.emailTaken'));
     }
 
     const created = await this.users.save(
@@ -68,6 +73,7 @@ export class UsersService {
   async findAll(actor: User, { page, limit }: ListUsersQueryDto) {
     const ability = this.abilityFactory.createForUser(actor);
     const [items, total] = await this.users.findAndCount({
+      ...depthOne(this.users),
       where: readableUsersWhere(actor, ability),
       order: { id: 'ASC' },
       skip: (page - 1) * limit,
@@ -88,7 +94,7 @@ export class UsersService {
 
     if (dto.email && dto.email !== target.email) {
       if (await this.users.existsBy({ email: dto.email })) {
-        throw new ConflictException('A user with this email already exists');
+        throw new ConflictException(i18nMessage('errors.users.emailTaken'));
       }
     }
 
@@ -113,15 +119,14 @@ export class UsersService {
     const target = await this.findOneOrFail(id);
     this.assertCan(actor, 'delete', target);
     if (await this.sitesService.isInchargeOfAnySite(id)) {
-      throw new ConflictException(
-        'This user is in charge of a site; assign another in-charge first',
-      );
+      throw new ConflictException(i18nMessage('errors.users.inchargeOfSite'));
     }
     await this.users.delete(id);
   }
 
   // --- used by the auth module ---
 
+  // With the role's permissions: CaslAbilityFactory builds the ability from them.
   findById(id: number): Promise<User | null> {
     return this.users.findOne({ where: { id } });
   }
@@ -148,8 +153,12 @@ export class UsersService {
   }
 
   private async findOneOrFail(id: number): Promise<User> {
-    const user = await this.findById(id);
-    if (!user) throw new NotFoundException(`User ${id} not found`);
+    const user = await this.users.findOne({
+      ...depthOne(this.users),
+      where: { id },
+    });
+    if (!user)
+      throw new NotFoundException(i18nMessage('errors.users.notFound', { id }));
     return user;
   }
 
@@ -157,7 +166,9 @@ export class UsersService {
     const ability = this.abilityFactory.createForUser(actor);
     if (!ability.can(action, subject('User', target))) {
       // Same as a missing user, so ids outside the actor's scope are not revealed.
-      throw new NotFoundException(`User ${target.id} not found`);
+      throw new NotFoundException(
+        i18nMessage('errors.users.notFound', { id: target.id }),
+      );
     }
   }
 }

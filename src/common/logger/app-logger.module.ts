@@ -42,7 +42,9 @@ const logRequestBody = env.LOG_REQUEST_BODY === true;
           full: logFullBodies,
           requestOnly: logRequestBody,
         }),
-        autoLogging: { ignore: (req) => req.url === '/health' },
+        autoLogging: {
+          ignore: (req) => req.url?.startsWith('/health') ?? false,
+        },
         customLogLevel: (_req, res, err) => {
           if (err || res.statusCode >= 500) return 'error';
           if (res.statusCode >= 400) return 'warn';

@@ -27,7 +27,9 @@ COPY --from=build /app/dist ./dist
 COPY package.json ./
 USER node
 EXPOSE 3000
+# Liveness only: /health also checks MySQL, RabbitMQ, the worker and SMTP, and one of
+# those being down must not mark this container unhealthy.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://localhost:'+(process.env.PORT||3000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://localhost:'+(process.env.PORT||3000)+'/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 # Default: the API. The pipeline overrides the command to run migrations / the seed.
 CMD ["node", "dist/main.js"]

@@ -1,8 +1,10 @@
 import { z } from 'zod';
-import { createZodDto } from '../../../common/zod/create-zod-dto.js';
 
 export const refreshTokenSchema = z.object({
-  refreshToken: z.string().min(1),
+  refreshToken: z
+    .string()
+    .min(1)
+    .meta({ example: 'refreshToken from the login response' }),
 });
 
-export class RefreshTokenDto extends createZodDto(refreshTokenSchema) {}
+export type RefreshTokenDto = z.output<typeof refreshTokenSchema>;

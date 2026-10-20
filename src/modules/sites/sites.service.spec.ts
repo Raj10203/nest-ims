@@ -10,7 +10,9 @@ function setup(incharge: Partial<User> | Error) {
   const sites = {
     existsBy: vi.fn().mockResolvedValue(false),
     create: vi.fn((site) => site),
-    save: vi.fn((site) => Promise.resolve(site)),
+    save: vi.fn((site) => Promise.resolve({ id: 1, ...site })),
+    findOne: vi.fn().mockResolvedValue({ id: 1 }),
+    metadata: { columns: [], relations: [] },
   };
   const users = {
     findOneFor: vi.fn(() =>

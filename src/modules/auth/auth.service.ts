@@ -4,6 +4,7 @@ import { env } from '../../config/env.js';
 import { hashSecret, verifySecret } from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
 import { UsersService } from '../users/users.service.js';
+import { i18nMessage } from '../../common/i18n/i18n-message.js';
 
 export interface TokenPair {
   accessToken: string;
@@ -20,7 +21,9 @@ export class AuthService {
   async login(email: string, password: string) {
     const found = await this.users.findByEmailWithPassword(email);
     if (!found || !(await verifySecret(password, found.password))) {
-      throw new UnauthorizedException('Invalid email or password');
+      throw new UnauthorizedException(
+        i18nMessage('errors.auth.invalidCredentials'),
+      );
     }
     const user = await this.users.findById(found.id);
     return { user, ...(await this.issueTokens(found.id)) };
@@ -36,7 +39,9 @@ export class AuthService {
       );
       userId = payload.sub;
     } catch {
-      throw new UnauthorizedException('Invalid or expired refresh token');
+      throw new UnauthorizedException(
+        i18nMessage('errors.auth.invalidRefreshToken'),
+      );
     }
 
     const user = await this.users.findByIdWithRefreshToken(userId);
@@ -44,7 +49,9 @@ export class AuthService {
       !user?.refreshTokenHash ||
       !(await verifySecret(refreshToken, user.refreshTokenHash))
     ) {
-      throw new UnauthorizedException('Invalid or expired refresh token');
+      throw new UnauthorizedException(
+        i18nMessage('errors.auth.invalidRefreshToken'),
+      );
     }
     return this.issueTokens(user.id);
   }

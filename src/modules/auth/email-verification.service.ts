@@ -16,6 +16,7 @@ import {
 import { hashSecret, verifySecret } from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
 import { JobQueueService } from '../jobs/job-queue.service.js';
+import { i18nMessage } from '../../common/i18n/i18n-message.js';
 
 @Injectable()
 export class EmailVerificationService {
@@ -95,7 +96,9 @@ export class EmailVerificationService {
       !state.emailOtpExpiresAt ||
       state.emailOtpExpiresAt.getTime() < Date.now()
     ) {
-      throw new BadRequestException('OTP expired or not requested');
+      throw new BadRequestException(
+        i18nMessage('errors.otp.expiredOrNotRequested'),
+      );
     }
     // Claim the attempt before checking the code, in one conditional UPDATE, so
     // concurrent requests cannot all pass the limit.
@@ -105,11 +108,11 @@ export class EmailVerificationService {
       1,
     );
     if (!claim.affected) {
-      throw new BadRequestException('Too many attempts, request a new OTP');
+      throw new BadRequestException(i18nMessage('errors.otp.tooManyAttempts'));
     }
 
     if (!(await verifySecret(otp, state.emailOtpHash))) {
-      throw new BadRequestException('Invalid OTP');
+      throw new BadRequestException(i18nMessage('errors.otp.invalid'));
     }
 
     await this.users.update(user.id, {
@@ -122,7 +125,7 @@ export class EmailVerificationService {
 
   private assertNotVerified(user: User): void {
     if (user.emailVerifiedAt) {
-      throw new ConflictException('Email is already verified');
+      throw new ConflictException(i18nMessage('errors.otp.alreadyVerified'));
     }
   }
 
@@ -146,7 +149,9 @@ function generateOtp(): string {
 
 function tooSoon(): HttpException {
   return new HttpException(
-    `Wait ${OTP_RESEND_COOLDOWN_SECONDS} seconds before requesting another code`,
+    i18nMessage('errors.otp.resendCooldown', {
+      seconds: OTP_RESEND_COOLDOWN_SECONDS,
+    }),
     HttpStatus.TOO_MANY_REQUESTS,
   );
 }

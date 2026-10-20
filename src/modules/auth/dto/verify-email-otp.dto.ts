@@ -1,8 +1,11 @@
 import { z } from 'zod';
-import { createZodDto } from '../../../common/zod/create-zod-dto.js';
+import type { ErrorKey } from '../../../common/i18n/i18n-message.js';
 
 export const verifyEmailOtpSchema = z.object({
-  otp: z.string().regex(/^\d{6}$/, 'OTP must be 6 digits'),
+  otp: z
+    .string()
+    .regex(/^\d{6}$/, 'errors.otp.format' satisfies ErrorKey)
+    .meta({ example: '123456' }),
 });
 
-export class VerifyEmailOtpDto extends createZodDto(verifyEmailOtpSchema) {}
+export type VerifyEmailOtpDto = z.output<typeof verifyEmailOtpSchema>;

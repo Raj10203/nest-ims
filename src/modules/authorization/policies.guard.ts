@@ -9,6 +9,7 @@ import type { Request } from 'express';
 import { User } from '../../entities/user.entity.js';
 import { CaslAbilityFactory } from './casl-ability.factory.js';
 import { CHECK_ABILITY, RequiredAbility } from './check-ability.decorator.js';
+import { i18nMessage } from '../../common/i18n/i18n-message.js';
 
 @Injectable()
 export class PoliciesGuard implements CanActivate {
@@ -28,9 +29,7 @@ export class PoliciesGuard implements CanActivate {
       .getRequest<Request & { user: User }>();
     const ability = this.abilityFactory.createForUser(user);
     if (!ability.can(required.action, required.subject)) {
-      throw new ForbiddenException(
-        'You are not allowed to perform this action',
-      );
+      throw new ForbiddenException(i18nMessage('errors.forbidden'));
     }
     return true;
   }

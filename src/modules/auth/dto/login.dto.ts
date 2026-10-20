@@ -1,9 +1,10 @@
 import { z } from 'zod';
-import { createZodDto } from '../../../common/zod/create-zod-dto.js';
 
+// The examples are the seeded super admin from .env.example, so Swagger's
+// "Try it out" logs in as-is on a development database.
 export const loginSchema = z.object({
-  email: z.email().toLowerCase(),
-  password: z.string().min(1),
+  email: z.email().toLowerCase().meta({ example: 'superadmin@example.com' }),
+  password: z.string().min(1).meta({ example: 'ChangeMe123!' }),
 });
 
-export class LoginDto extends createZodDto(loginSchema) {}
+export type LoginDto = z.output<typeof loginSchema>;

@@ -1,0 +1,33 @@
+{
+  "validationFailed": "Validation failed",
+  "tooManyRequests": "Too many requests, please try again later",
+  "forbidden": "You are not allowed to perform this action",
+  "auth": {
+    "invalidCredentials": "Invalid email or password",
+    "invalidRefreshToken": "Invalid or expired refresh token",
+    "missingBearerToken": "Missing bearer token",
+    "invalidAccessToken": "Invalid or expired access token",
+    "userNoLongerExists": "User no longer exists",
+    "emailNotVerified": "Email is not verified"
+  },
+  "otp": {
+    "format": "OTP must be 6 digits",
+    "expiredOrNotRequested": "OTP expired or not requested",
+    "tooManyAttempts": "Too many attempts, request a new OTP",
+    "invalid": "Invalid OTP",
+    "alreadyVerified": "Email is already verified",
+    "resendCooldown": "Wait {seconds} seconds before requesting another code"
+  },
+  "users": {
+    "notFound": "User {id} not found",
+    "roleNotFound": "Role {id} does not exist",
+    "cannotCreateWithRole": "You are not allowed to create a user with role \"{role}\"",
+    "emailTaken": "A user with this email already exists",
+    "inchargeOfSite": "This user is in charge of a site; assign another in-charge first"
+  },
+  "sites": {
+    "notFound": "Site {id} not found",
+    "codeTaken": "A site with this code already exists",
+    "inchargeRoleRequired": "User {id} does not have the {role} role"
+  }
+}

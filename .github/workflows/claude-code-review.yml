@@ -16,11 +16,14 @@ concurrency:
   group: claude-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# The job fails unless the verdict is ✅, so a PR with open findings shows a red
+# "Claude review" check. It is not a required check: developers can still merge.
 jobs:
   review:
+    name: Claude review
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     permissions:
       contents: read
       pull-requests: write
@@ -32,6 +35,7 @@ jobs:
           fetch-depth: 0
 
       - uses: anthropics/claude-code-action@v1
+        id: claude
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -54,6 +58,10 @@ jobs:
             ## Review
             Review the WHOLE pull request every time, not only the latest commit, and
             ignore earlier review comments.
+            For a large PR, list the files first (`gh pr diff ${{ github.event.pull_request.number }} --name-only`),
+            then read the diff file by file with
+            `git diff origin/${{ github.event.pull_request.base.ref }}...HEAD -- <path>`. Skip
+            `package-lock.json` and `src/generated/` (generated).
             1. Get the diff with `gh pr diff ${{ github.event.pull_request.number }}`. Use
                `git diff`, `git log` and `git show` against `origin/${{ github.event.pull_request.base.ref }}`
                and read each changed file around the change before commenting on it.
@@ -64,9 +72,20 @@ jobs:
             3. Correctness and security: logic errors, edge cases, race conditions,
                unawaited promises, auth and permission checks, data leaking into logs or
                responses, migrations that would break the version still running.
-            4. Tests: new behaviour without a test.
+            4. Impact on existing code: for every changed or removed export, service
+               method, guard, decorator, helper, entity column or relation, DTO/schema
+               and response shape, find ALL its usages with Grep (including files the PR
+               does not touch, specs, the CLI and the worker), and read each caller.
+               Check that every caller still works with the new signature, arguments,
+               return value, thrown errors, loaded relations and side effects. Also
+               check API clients: a changed route, status code, request field or
+               response field is a breaking change and must be declared in the
+               description. A caller this PR breaks is this PR's issue; name the
+               caller's `path:line` in the finding.
+            5. Tests: new behaviour without a test.
             Do not flag formatting or lint issues (Prettier and oxlint cover them), or
-            problems in code the PR does not touch (one line at most if serious).
+            problems in code the PR does not touch, unless this PR's change breaks it
+            (one line at most otherwise, if serious).
 
             ## Calibration (most important)
             A clean PR is a normal, expected result. Do not search for something to say:
@@ -88,6 +107,11 @@ jobs:
             ## Read-only
             Never change the working tree, index, HEAD or branches: no checkout, commit,
             stash or file edits in the repo.
+
+            ## Always post
+            Only the allowed tools work; anything else is denied. A denied command is
+            never a reason to stop: use an allowed tool instead (Read, Grep, the git and
+            gh commands above), and always finish by posting the comment.
 
             ## Output
             Write the comment in Markdown to /tmp/review.md (never inside the repo), then
@@ -123,19 +147,62 @@ jobs:
 
             ### Verdict
 
-            Decided only by the buckets, never by gut feeling:
-            - ✅ **Mergeable**: no Critical and no Important items (Minor items are fine).
-            - ⚠️ **Mergeable with fixes**: at least one Important item, no Critical.
-            - ❌ **Not mergeable**: at least one Critical item.
+            Exactly one of these three lines (copy it as written), followed by 1 to 2
+            sentences of reasoning. It is decided only by the buckets, never by gut feeling:
+            - `✅ **Mergeable**` when there are no Critical and no Important items (Minor items are fine).
+            - `⚠️ **Mergeable with fixes**` when there is at least one Important item and no Critical.
+            - `❌ **Not mergeable**` when there is at least one Critical item.
 
-            Risk follows the same rule: low for ✅, medium for ⚠️, high for ❌.
-
-            followed by 1 to 2 sentences of reasoning.
+            Risk follows the same rule: low for ✅, medium for ⚠️, high for ❌. This job
+            fails on ⚠️ and ❌ (a warning on the PR), so never soften a verified
+            Important or Critical finding to get a ✅, and never invent one.
 
             Rules: most severe first. No praise, no summary of what the PR does, no vague
             findings like "improve error handling". Always give a verdict.
           # Write is only for /tmp/review.md; the prompt forbids writing in the repo.
           claude_args: |
-            --model claude-sonnet-5-5
-            --max-turns 50
-            --allowedTools "Read,Grep,Glob,Write,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git merge-base:*)"
+            --model claude-opus-5-5
+            --max-turns 100
+            --allowedTools "Read,Grep,Glob,Write,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git merge-base:*),Bash(git ls-files:*),Bash(head:*),Bash(tail:*),Bash(wc:*)"
+
+      # The full transcript stays off (public repo: it can contain secrets); the
+      # denied commands alone explain a review that stopped early.
+      - name: Show denied tool calls
+        if: always() && steps.claude.outputs.execution_file != ''
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          jq -r '.[] | select(.type == "result") | .permission_denials[]?
+            | "\(.tool_name): \(.tool_input.command // .tool_input.file_path // "")"' \
+            "$EXECUTION_FILE" || true
+
+      # Fails (a warning on the PR, not a merge block) unless the review for this
+      # commit says ✅. The action itself reports success even when Claude posted nothing.
+      - name: Check the review verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          short="${SHA:0:7}"
+          body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments \
+            | jq -r --arg marker "Reviewed commit \`$short\`" \
+              '[.comments[] | select(.body | contains($marker))] | last | .body // ""')
+          if [ -z "$body" ]; then
+            echo "::error::Claude finished without posting a review for $short. See 'Show denied tool calls'."
+            exit 1
+          fi
+          risk=$(printf '%s\n' "$body" | grep -oE '\*\*Risk:\*\* (low|medium|high)' | head -n1 | awk '{print $2}')
+          case "$risk" in
+            low)
+              echo "✅ Mergeable (risk low) for $short" ;;
+            medium)
+              echo "::error::Claude review: ⚠️ Mergeable with fixes (risk medium) for $short. Fix the Important items and push to re-run."
+              exit 1 ;;
+            high)
+              echo "::error::Claude review: ❌ Not mergeable (risk high) for $short. Fix the Critical items and push to re-run."
+              exit 1 ;;
+            *)
+              echo "::error::Could not read the risk level from the review of $short."
+              exit 1 ;;
+          esac

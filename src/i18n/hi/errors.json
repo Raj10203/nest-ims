@@ -1,0 +1,33 @@
+{
+  "validationFailed": "सत्यापन विफल रहा",
+  "tooManyRequests": "बहुत अधिक अनुरोध, कृपया कुछ देर बाद पुनः प्रयास करें",
+  "forbidden": "आपको यह कार्य करने की अनुमति नहीं है",
+  "auth": {
+    "invalidCredentials": "अमान्य ईमेल या पासवर्ड",
+    "invalidRefreshToken": "अमान्य या समाप्त रिफ्रेश टोकन",
+    "missingBearerToken": "बेयरर टोकन नहीं मिला",
+    "invalidAccessToken": "अमान्य या समाप्त एक्सेस टोकन",
+    "userNoLongerExists": "यह उपयोगकर्ता अब मौजूद नहीं है",
+    "emailNotVerified": "ईमेल सत्यापित नहीं है"
+  },
+  "otp": {
+    "format": "OTP 6 अंकों का होना चाहिए",
+    "expiredOrNotRequested": "OTP की समय-सीमा समाप्त हो गई है या इसका अनुरोध नहीं किया गया",
+    "tooManyAttempts": "बहुत अधिक प्रयास, नया OTP मँगाएँ",
+    "invalid": "अमान्य OTP",
+    "alreadyVerified": "ईमेल पहले से सत्यापित है",
+    "resendCooldown": "दूसरा कोड मँगाने से पहले {seconds} सेकंड प्रतीक्षा करें"
+  },
+  "users": {
+    "notFound": "उपयोगकर्ता {id} नहीं मिला",
+    "roleNotFound": "भूमिका {id} मौजूद नहीं है",
+    "cannotCreateWithRole": "आपको \"{role}\" भूमिका वाला उपयोगकर्ता बनाने की अनुमति नहीं है",
+    "emailTaken": "इस ईमेल वाला उपयोगकर्ता पहले से मौजूद है",
+    "inchargeOfSite": "यह उपयोगकर्ता एक साइट का प्रभारी है; पहले किसी अन्य प्रभारी को नियुक्त करें"
+  },
+  "sites": {
+    "notFound": "साइट {id} नहीं मिली",
+    "codeTaken": "इस कोड वाली साइट पहले से मौजूद है",
+    "inchargeRoleRequired": "उपयोगकर्ता {id} के पास {role} भूमिका नहीं है"
+  }
+}
