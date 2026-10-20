@@ -58,8 +58,15 @@ function setup() {
 }
 
 describe('UsersService.update', () => {
-  it('resets verification and drops any pending OTP when the email changes', async () => {
-    const { service, users } = setup();
+  it('resets verification and cancels any OTP or invitation link sent to the old address', async () => {
+    const { service, users, events } = setup();
+    users.findOne.mockResolvedValueOnce(target).mockResolvedValue({
+      id: 2,
+      email: 'new@example.com',
+      firstName: 'Ann',
+      createdById: 1,
+      role: { level: 20 },
+    });
     await service.update(admin, 2, { email: 'new@example.com' });
     expect(users.update).toHaveBeenCalledWith(2, {
       email: 'new@example.com',
@@ -67,13 +74,20 @@ describe('UsersService.update', () => {
       emailOtpHash: null,
       emailOtpExpiresAt: null,
       emailOtpAttempts: 0,
+      inviteTokenHash: null,
+      inviteExpiresAt: null,
     });
+    expect(events.emit).toHaveBeenCalledWith(
+      'user.email-changed',
+      expect.objectContaining({ userId: 2, email: 'new@example.com' }),
+    );
   });
 
   it('keeps verification when the email is unchanged', async () => {
-    const { service, users } = setup();
+    const { service, users, events } = setup();
     await service.update(admin, 2, { firstName: 'Ann' });
     expect(users.update).toHaveBeenCalledWith(2, { firstName: 'Ann' });
+    expect(events.emit).not.toHaveBeenCalled();
   });
 });
 

@@ -80,13 +80,13 @@ sequenceDiagram
 
 - Admins never set or see a user's first password. The user is created without one, and login answers "invalid email or password" until the invitation is accepted.
 - The link is `<APP_URL>/set-password?token=...`: a 256-bit random token, valid **72 hours, once**. Only its SHA-256 hash is stored, so the row can be looked up by it (a slow salted hash is only needed for guessable secrets). Accepting it also sets `emailVerifiedAt`, because opening the email proves the address.
-- `POST /api/users/:id/invitation` (anyone who may update the user) sends a new link and invalidates the old one; it returns 409 once the user has a password. Setting a password through `PATCH /api/users/:id` also cancels a pending link.
-- `UsersModule` does not know about invitations: it only emits `user.created`, and `InvitationsModule` (which imports `UsersModule`) listens. The listener runs asynchronously and logs instead of throwing, so a broker outage never fails user creation; the admin resends.
+- `POST /api/users/:id/invitation` (anyone who may update the user) sends a new link and invalidates the old one; it returns 409 once the user has a password. Setting a password through `PATCH /api/users/:id` also cancels a pending link. Changing the email cancels the link sent to the old address in the same update and emits `user.email-changed`; if the user is still pending, the listener sends a new link to the corrected address.
+- `UsersModule` does not know about invitations: it only emits `user.created` and `user.email-changed`, and `InvitationsModule` (which imports `UsersModule`) listens. The listener runs asynchronously and logs instead of throwing, so a broker outage never fails user creation; the admin resends.
 
 ### 1.3.2 Optional MFA (emailed sign-in code)
 
 - A user turns it on or off for themselves with `PUT /api/auth/me/mfa { enabled, password }`; the password is asked again so a stolen access token alone cannot disable it.
-- With MFA on, `POST /api/auth/login` answers `{ mfaRequired: true, challengeToken, expiresInMinutes }` instead of tokens and emails a 6-digit code (10 minutes, 5 attempts, works once). `POST /api/auth/login/mfa { challengeToken, otp }` returns the usual `{ user, accessToken, refreshToken }`.
+- With MFA on, `POST /api/auth/login` answers `{ mfaRequired: true, challengeToken, expiresInMinutes }` instead of tokens and emails a 6-digit code (works once). Codes share one 10-minute window per user with 5 attempts in total: logging in again inside the window sends a new code but neither resets the attempts nor extends the window, so knowing the password does not buy fresh guesses. Once they are used up, login and code checks answer 429 "try again in N minutes". `POST /api/auth/login/mfa { challengeToken, otp }` returns the usual `{ user, accessToken, refreshToken }`.
 - The challenge token is a short-lived JWT of type `mfa`, signed with the access secret; `JwtAuthGuard` rejects that type, so it can never be used as an access token.
 
 ### 1.4 Email verification (OTP)

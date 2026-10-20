@@ -25,6 +25,10 @@ import { CreateUserDto } from './dto/create-user.dto.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import { USER_CREATED, UserCreatedEvent } from './events/user-created.event.js';
+import {
+  USER_EMAIL_CHANGED,
+  UserEmailChangedEvent,
+} from './events/user-email-changed.event.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
 import { depthOne } from '../../common/typeorm/depth-one.js';
 
@@ -103,7 +107,8 @@ export class UsersService {
     const target = await this.findOneOrFail(id);
     this.assertCan(actor, 'update', target);
 
-    if (dto.email && dto.email !== target.email) {
+    const emailChanged = !!dto.email && dto.email !== target.email;
+    if (emailChanged) {
       if (await this.users.existsBy({ email: dto.email })) {
         throw new ConflictException(i18nMessage('errors.users.emailTaken'));
       }
@@ -118,13 +123,16 @@ export class UsersService {
     }
     await this.users.update(id, {
       ...rest,
-      // A code sent to the old address must not verify the new one.
-      ...(dto.email && dto.email !== target.email
+      // A code or invitation link sent to the old address must not verify (or
+      // claim) the new one. A pending user is re-invited by the event below.
+      ...(emailChanged
         ? {
             emailVerifiedAt: null,
             emailOtpHash: null,
             emailOtpExpiresAt: null,
             emailOtpAttempts: 0,
+            inviteTokenHash: null,
+            inviteExpiresAt: null,
           }
         : {}),
       // A password set here also cancels a pending invitation link.
@@ -136,7 +144,14 @@ export class UsersService {
           }
         : {}),
     });
-    return this.findOneOrFail(id);
+    const updated = await this.findOneOrFail(id);
+    if (emailChanged) {
+      this.events.emit(
+        USER_EMAIL_CHANGED,
+        new UserEmailChangedEvent(id, updated.email, updated.firstName),
+      );
+    }
+    return updated;
   }
 
   async remove(actor: User, id: number): Promise<void> {

@@ -41,9 +41,14 @@ export class InvitationsService {
     });
   }
 
+  // Invited but has not set a password yet.
+  async isPending(id: number): Promise<boolean> {
+    return !(await this.users.existsBy({ id, password: Not(IsNull()) }));
+  }
+
   async resend(actor: User, id: number): Promise<void> {
     const target = await this.usersService.findOneToUpdate(actor, id);
-    if (await this.users.existsBy({ id, password: Not(IsNull()) })) {
+    if (!(await this.isPending(id))) {
       throw new ConflictException(i18nMessage('errors.invite.alreadyAccepted'));
     }
     await this.send(target);

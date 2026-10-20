@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  HttpException,
+  HttpStatus,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -39,27 +41,44 @@ export class MfaService {
   ) {}
 
   // Login step 1 for a user with MFA: a new code replaces the previous one.
+  // Codes share one window per user: a code requested inside an open window
+  // keeps its expiry and attempt count, so logging in again with the password
+  // does not buy fresh guesses.
   async startChallenge(user: User): Promise<MfaChallenge> {
+    const now = Date.now();
+    const state = await this.loadOtpState(user.id);
+    const open =
+      !!state?.mfaOtpExpiresAt && state.mfaOtpExpiresAt.getTime() > now;
+    const expiresAt = open
+      ? state.mfaOtpExpiresAt!
+      : new Date(now + OTP_TTL_MINUTES * 60_000);
+    const expiresInMinutes = Math.ceil((expiresAt.getTime() - now) / 60_000);
+    if (open && state.mfaOtpAttempts >= OTP_MAX_ATTEMPTS) {
+      throw new HttpException(
+        i18nMessage('errors.mfa.locked', { minutes: expiresInMinutes }),
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
     const otp = generateOtp();
     await this.users.update(user.id, {
       mfaOtpHash: await hashSecret(otp),
-      mfaOtpExpiresAt: new Date(Date.now() + OTP_TTL_MINUTES * 60_000),
-      mfaOtpAttempts: 0,
+      mfaOtpExpiresAt: expiresAt,
+      ...(open ? {} : { mfaOtpAttempts: 0 }),
     });
     await this.jobs.publish('mail.send-login-otp', {
       to: user.email,
       otp,
-      expiresInMinutes: OTP_TTL_MINUTES,
+      expiresInMinutes,
     });
     const challengeToken = await this.jwt.signAsync(
       { sub: user.id, typ: MFA_TOKEN_TYPE },
-      { secret: env.JWT_ACCESS_SECRET, expiresIn: `${OTP_TTL_MINUTES}m` },
+      {
+        secret: env.JWT_ACCESS_SECRET,
+        expiresIn: Math.ceil((expiresAt.getTime() - now) / 1000),
+      },
     );
-    return {
-      mfaRequired: true,
-      challengeToken,
-      expiresInMinutes: OTP_TTL_MINUTES,
-    };
+    return { mfaRequired: true, challengeToken, expiresInMinutes };
   }
 
   // Login step 2: returns the user id once the code matches. A code works once.
@@ -81,11 +100,7 @@ export class MfaService {
       );
     }
 
-    const state = await this.users
-      .createQueryBuilder('user')
-      .addSelect(['user.mfaOtpHash', 'user.mfaOtpExpiresAt'])
-      .where('user.id = :id', { id: userId })
-      .getOne();
+    const state = await this.loadOtpState(userId);
     if (
       !state?.mfaOtpHash ||
       !state.mfaOtpExpiresAt ||
@@ -103,7 +118,14 @@ export class MfaService {
       1,
     );
     if (!claim.affected) {
-      throw new BadRequestException(i18nMessage('errors.otp.tooManyAttempts'));
+      throw new HttpException(
+        i18nMessage('errors.mfa.locked', {
+          minutes: Math.ceil(
+            (state.mfaOtpExpiresAt.getTime() - Date.now()) / 60_000,
+          ),
+        }),
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
     if (!(await verifySecret(otp, state.mfaOtpHash))) {
       throw new BadRequestException(i18nMessage('errors.otp.invalid'));
@@ -115,6 +137,19 @@ export class MfaService {
       mfaOtpAttempts: 0,
     });
     return userId;
+  }
+
+  // The OTP columns are select:false, so they must be asked for.
+  private loadOtpState(id: number): Promise<User | null> {
+    return this.users
+      .createQueryBuilder('user')
+      .addSelect([
+        'user.mfaOtpHash',
+        'user.mfaOtpExpiresAt',
+        'user.mfaOtpAttempts',
+      ])
+      .where('user.id = :id', { id })
+      .getOne();
   }
 
   // The password is asked again, so a stolen access token alone cannot turn

@@ -44,6 +44,33 @@ describe('MfaService', () => {
     expect(payload).toMatchObject({ sub: 3, typ: 'mfa' });
   });
 
+  it('keeps the attempt count and expiry when a code is requested again inside the window', async () => {
+    const expiresAt = new Date(Date.now() + 5 * 60_000);
+    const { service, users, jobs } = setup({
+      mfaOtpExpiresAt: expiresAt,
+      mfaOtpAttempts: 2,
+    });
+    const challenge = await service.startChallenge(user);
+    const saved = users.update.mock.calls[0][1];
+    expect(saved.mfaOtpExpiresAt).toBe(expiresAt);
+    expect(saved).not.toHaveProperty('mfaOtpAttempts');
+    expect(challenge.expiresInMinutes).toBe(5);
+    expect(jobs.publish.mock.calls[0][1].expiresInMinutes).toBe(5);
+  });
+
+  it('refuses a new code once the window has used all attempts', async () => {
+    const { service, users, jobs } = setup({
+      mfaOtpExpiresAt: new Date(Date.now() + 3 * 60_000),
+      mfaOtpAttempts: OTP_MAX_ATTEMPTS,
+    });
+    await expect(service.startChallenge(user)).rejects.toMatchObject({
+      status: 429,
+      message: 'errors.mfa.locked',
+    });
+    expect(users.update).not.toHaveBeenCalled();
+    expect(jobs.publish).not.toHaveBeenCalled();
+  });
+
   it('returns the user id for the right code and clears it', async () => {
     const { service, users, jwt } = setup({
       mfaOtpHash: await hashSecret('123456'),
@@ -88,6 +115,6 @@ describe('MfaService', () => {
     const locked = setup({ ...valid, mfaOtpAttempts: OTP_MAX_ATTEMPTS });
     await expect(
       locked.service.completeChallenge(token, '123456'),
-    ).rejects.toThrow('errors.otp.tooManyAttempts');
+    ).rejects.toMatchObject({ status: 429, message: 'errors.mfa.locked' });
   });
 });

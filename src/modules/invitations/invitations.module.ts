@@ -6,10 +6,10 @@ import { JobsModule } from '../jobs/jobs.module.js';
 import { UsersModule } from '../users/users.module.js';
 import { InvitationsController } from './invitations.controller.js';
 import { InvitationsService } from './invitations.service.js';
-import { UserCreatedListener } from './user-created.listener.js';
+import { InvitationListener } from './invitation.listener.js';
 
 // Depends on UsersModule, never the other way round: users only emit
-// user.created, so there is no import cycle.
+// user.created and user.email-changed, so there is no import cycle.
 @Module({
   imports: [
     TypeOrmModule.forFeature([User]),
@@ -18,6 +18,6 @@ import { UserCreatedListener } from './user-created.listener.js';
     AuthorizationModule,
   ],
   controllers: [InvitationsController],
-  providers: [InvitationsService, UserCreatedListener],
+  providers: [InvitationsService, InvitationListener],
 })
 export class InvitationsModule {}

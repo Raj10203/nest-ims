@@ -40,7 +40,8 @@
   },
   "mfa": {
     "invalidChallenge": "Your sign-in has expired; log in again",
-    "wrongPassword": "The password is incorrect"
+    "wrongPassword": "The password is incorrect",
+    "locked": "Too many wrong codes; try again in {minutes} minutes"
   },
   "password": {
     "uppercase": "The password needs at least one capital letter",

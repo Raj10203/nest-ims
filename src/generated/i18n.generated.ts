@@ -48,6 +48,7 @@ export type I18nTranslations = {
         "mfa": {
             "invalidChallenge": string;
             "wrongPassword": string;
+            "locked": string;
         };
         "password": {
             "uppercase": string;
