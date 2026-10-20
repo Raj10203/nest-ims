@@ -354,6 +354,8 @@ sequenceDiagram
 
 > Status: the hand-off from GitHub to Azure DevOps (last step in `ci-cd.yml`) and the Azure pipeline steps are currently commented out in the repository while the VM is being finalised. The deploy script itself lives on the VM, not in this repo. Rollback = re-run the Azure pipeline with an older commit SHA as `imageTag`.
 
+**Runner image:** every job runs on `ubuntu-24.04`, not `ubuntu-latest`, so GitHub moving the `latest` label to a new Ubuntu release never changes the OS under a build. GitHub still patches that image, and retires it a few years after release; move to the next version deliberately, in a PR of its own.
+
 **Required secrets**
 
 | Where | Secret |
