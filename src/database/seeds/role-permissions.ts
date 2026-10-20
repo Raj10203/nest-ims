@@ -21,7 +21,7 @@ const SITE_CRUD: PermissionDef[] = [
 // Hierarchy limits (who can touch whom) are applied by CaslAbilityFactory.
 export const ROLE_PERMISSIONS: Record<RoleName, PermissionDef[]> = {
   [RoleName.SUPER_ADMIN]: [['manage', 'all']],
-  [RoleName.ADMIN]: [...USER_CRUD, ...SITE_CRUD],
+  [RoleName.ADMIN]: [...USER_CRUD, ...SITE_CRUD, ['read', 'AuditLog']],
   [RoleName.MANAGER]: [...USER_CRUD, ...SITE_CRUD],
   [RoleName.SITE_INCHARGE]: USER_CRUD,
   [RoleName.SITE_TECHNICIAN]: [['read', 'User']],

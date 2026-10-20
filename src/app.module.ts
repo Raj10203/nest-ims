@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_PIPE } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import type { Request } from 'express';
+import { ClsModule } from 'nestjs-cls';
 import { minutes, ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppI18nModule } from './common/i18n/app-i18n.module.js';
@@ -10,6 +12,7 @@ import { AppLoggerModule } from './common/logger/app-logger.module.js';
 import { ZodValidationPipe } from './common/zod/zod-validation.pipe.js';
 import { storageEnv } from './config/storage-env.js';
 import { dataSourceOptions } from './database/data-source.js';
+import { AuditModule } from './modules/audit/audit.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { AuthorizationModule } from './modules/authorization/authorization.module.js';
 import { HealthModule } from './modules/health/health.module.js';
@@ -23,6 +26,16 @@ import { UsersModule } from './modules/users/users.module.js';
   imports: [
     AppLoggerModule,
     AppI18nModule,
+    // Request context (AsyncLocalStorage) for every request: id and client IP
+    // here, the signed-in actor from JwtAuthGuard. AuditService reads it.
+    ClsModule.forRoot({
+      global: true,
+      middleware: {
+        mount: true,
+        generateId: true,
+        setup: (cls, req: Request) => cls.set('ip', req.ip),
+      },
+    }),
     EventEmitterModule.forRoot(),
     // Per client IP, in memory: each API instance counts on its own.
     ThrottlerModule.forRoot({
@@ -35,6 +48,7 @@ import { UsersModule } from './modules/users/users.module.js';
       container: storageEnv.AZURE_STORAGE_CONTAINER,
       publicUrl: storageEnv.AZURE_STORAGE_PUBLIC_URL,
     }),
+    AuditModule,
     AuthorizationModule,
     UsersModule,
     RolesModule,

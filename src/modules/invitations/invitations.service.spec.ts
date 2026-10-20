@@ -7,8 +7,10 @@ function setup({
   affected = 1,
   hasPassword = false,
 } = {}) {
+  const manager = { update: vi.fn().mockResolvedValue({ affected }) };
   const users = {
     update: vi.fn().mockResolvedValue({ affected }),
+    manager: { transaction: (work: (m: unknown) => unknown) => work(manager) },
     findOne: vi.fn().mockResolvedValue(found),
     existsBy: vi.fn().mockResolvedValue(hasPassword),
   };
@@ -20,12 +22,14 @@ function setup({
     }),
   };
   const jobs = { publish: vi.fn().mockResolvedValue(undefined) };
+  const audit = { record: vi.fn().mockResolvedValue(undefined) };
   const service = new InvitationsService(
     users as any,
     usersService as any,
     jobs as any,
+    audit as any,
   );
-  return { service, users, usersService, jobs };
+  return { service, users, usersService, jobs, manager, audit };
 }
 
 describe('InvitationsService', () => {
@@ -43,22 +47,30 @@ describe('InvitationsService', () => {
     expect(saved.inviteTokenHash).not.toContain(token);
   });
 
-  it('sets the password, verifies the email and clears the token', async () => {
-    const { service, users } = setup();
+  it('sets the password, verifies the email and clears the token, audited in the same transaction', async () => {
+    const { service, manager, audit } = setup();
     await service.accept('tok', 'Password123!');
-    const [where, changes] = users.update.mock.calls[0];
+    const [, where, changes] = manager.update.mock.calls[0];
     expect(where).toMatchObject({ id: 7, inviteTokenHash: hashToken('tok') });
     expect(changes.password).not.toBe('Password123!');
     expect(changes.emailVerifiedAt).toBeInstanceOf(Date);
     expect(changes.inviteTokenHash).toBeNull();
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityType: 'User',
+        entityId: '7',
+        actorId: 7,
+      }),
+      manager,
+    );
   });
 
   it('rejects an unknown, used or expired token', async () => {
-    const { service, users } = setup({ found: null });
+    const { service, manager } = setup({ found: null });
     await expect(service.accept('tok', 'Password123!')).rejects.toThrow(
       'errors.invite.invalid',
     );
-    expect(users.update).not.toHaveBeenCalled();
+    expect(manager.update).not.toHaveBeenCalled();
   });
 
   it('rejects the link when a concurrent request used it first', async () => {
@@ -69,11 +81,11 @@ describe('InvitationsService', () => {
   });
 
   it('rejects a password containing the user name', async () => {
-    const { service, users } = setup();
+    const { service, manager } = setup();
     await expect(service.accept('tok', 'JaneDoe#2026')).rejects.toThrow(
       'errors.validationFailed',
     );
-    expect(users.update).not.toHaveBeenCalled();
+    expect(manager.update).not.toHaveBeenCalled();
   });
 
   it('does not resend to a user who already set a password', async () => {

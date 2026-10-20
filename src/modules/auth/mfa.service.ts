@@ -167,6 +167,7 @@ export class MfaService {
     if (!found?.password || !(await verifySecret(password, found.password))) {
       throw new BadRequestException(i18nMessage('errors.mfa.wrongPassword'));
     }
-    await this.users.update(user.id, { mfaEnabled: enabled });
+    // save(), not update(): turning MFA off is a security change worth auditing.
+    await this.users.save({ id: user.id, mfaEnabled: enabled });
   }
 }

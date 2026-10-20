@@ -121,7 +121,9 @@ export class UsersService {
         dto.lastName ?? target.lastName,
       ]);
     }
-    await this.users.update(id, {
+    // save(), not update(): AuditSubscriber records the change.
+    await this.users.save({
+      id,
       ...rest,
       // A code or invitation link sent to the old address must not verify (or
       // claim) the new one. A pending user is re-invited by the event below.
@@ -160,7 +162,7 @@ export class UsersService {
     if (await this.sitesService.isInchargeOfAnySite(id)) {
       throw new ConflictException(i18nMessage('errors.users.inchargeOfSite'));
     }
-    await this.users.delete(id);
+    await this.users.remove(target);
     if (target.avatarUrl) await this.storage.deleteByUrl(target.avatarUrl);
   }
 
@@ -175,7 +177,7 @@ export class UsersService {
       file.buffer,
       file.mimetype,
     );
-    await this.users.update(id, { avatarUrl });
+    await this.users.save({ id, avatarUrl });
     if (target.avatarUrl) await this.storage.deleteByUrl(target.avatarUrl);
     return this.findOneOrFail(id);
   }
@@ -183,7 +185,7 @@ export class UsersService {
   async removeAvatar(actor: User, id: number): Promise<void> {
     const target = await this.findAvatarOwner(actor, id);
     if (!target.avatarUrl) return;
-    await this.users.update(id, { avatarUrl: null });
+    await this.users.save({ id, avatarUrl: null });
     await this.storage.deleteByUrl(target.avatarUrl);
   }
 

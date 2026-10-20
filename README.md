@@ -48,6 +48,7 @@ src/
     mail/                    dynamic module MailModule.forRoot(options): nodemailer + the "send email OTP" job handler
     storage/                 Azure Blob Storage (StorageModule.forRoot via ConfigurableModuleBuilder)
     health/                  Terminus checks: database, RabbitMQ, worker, blob storage, SMTP
+    audit/                   audit trail: TypeORM subscriber, AuditService, GET /audit-logs
 ```
 
 Each feature keeps its module, controller, service, DTOs and tests together; entities live in one shared folder.
@@ -181,7 +182,18 @@ flowchart LR
 - `StorageModule` is built with `ConfigurableModuleBuilder` (`forRoot` / `forRootAsync`) and is global, so any feature can inject `BlobStorageService`. Development uses the **Azurite** emulator from docker-compose; production gets a real storage account through the same `AZURE_STORAGE_*` variables, with no code change. `AZURE_STORAGE_PUBLIC_URL` replaces the endpoint in stored URLs, because inside Docker the emulator is `http://azurite:10000`, which the browser cannot reach.
 - The container is created on the first upload with anonymous read access for blobs, so stored URLs work without a token.
 
-### 1.11 API surface
+### 1.11 Audit trail
+
+Every create, update and delete of an entity is recorded in `audit_logs`: who (`actorId`, `actorRole`), what (`action`, `entityType`, `entityId`), the values before and after (`oldValues` / `newValues`: only the changed fields for an update, the whole record for create and delete), where (`ip`, `requestId`) and when (`createdAt`, milliseconds). Rows are append-only, and `actorId` has no foreign key, so the history outlives the user.
+
+- **Automatic:** a TypeORM entity subscriber (`AuditSubscriber`) writes the row in the **same transaction** as the change, so a change and its audit entry commit or roll back together, and new entities are covered without extra code.
+- **Who:** `nestjs-cls` keeps a per-request context (AsyncLocalStorage). Its middleware stores the request id and client IP, and `JwtAuthGuard` adds the signed-in user, so no service has to pass the actor along.
+- **What is never stored:** secrets are masked with the same name rule as the logs (a password change shows as `[REDACTED]`), and technical columns (OTP codes and counters, token hashes, `createdAt` / `updatedAt`) are left out with `@NotAudited()`.
+- **Rule for writes:** TypeORM tells a subscriber which row changed only for `save()` and `remove()`. Business changes therefore use `save({ id, ...changes })` and `remove(entity)`; `repository.update(criteria, values)` is kept for technical state, and an atomic conditional update that matters (accepting an invitation) records its entry explicitly through `AuditService.record` inside its transaction.
+- **Reading:** `GET /api/audit-logs` (filters `entityType`, `entityId`, `actorId`, `action`; newest first) for `super_admin` and `admin`. `User` entries contain personal data, so they follow the users read scope: an admin sees only the history of users they may read (`readableUsersWhere`), not that of super admins, other admins or deleted users.
+- **Not covered:** the seed command (the CLI does not load the audit module), and changes made directly in the database.
+
+### 1.12 API surface
 
 All routes are under `/api`, except `GET /health`, `GET /health/live` and the docs (`/docs`). Every route accepts `?lang=` / `Accept-Language`.
 
@@ -192,6 +204,7 @@ All routes are under `/api`, except `GET /health`, `GET /health/live` and the do
 | Users | `POST/GET /users`, `GET/PATCH/DELETE /users/:id`, `PUT /users/:id/avatar` (multipart `file`, max 500 KB), `DELETE /users/:id/avatar` |
 | Sites | `POST/GET /sites`, `GET/PATCH/DELETE /sites/:id` (body accepts `inchargeId`) |
 | Roles | `GET /roles` |
+| Audit | `GET /audit-logs` (super admin, admin) |
 | Health | `GET /health`, `GET /health/live` (no prefix) |
 
 ---
@@ -396,6 +409,7 @@ sequenceDiagram
 | Translation keys in exceptions, translated in one filter | Services stay language-agnostic and tests assert keys; adding a language is a folder of JSON files plus its zod locale |
 | Avatars in Azure Blob Storage, URL on the user | The API never serves image bytes; browsers and CDNs load them directly. Blob names are unique, so they are cached for a year and replacing an avatar never shows a stale image |
 | Avatars: size, type from bytes, then full content check; no re-encoding | Each layer stops a different attack (memory, renamed files, polyglots and bombs) while the client keeps control of the image it sends |
+| Audit rows from a TypeORM subscriber, in the change's transaction | Automatic for every entity, and a change can never be saved without its audit entry |
 | `/health` reports, `/health/live` is the probe | Ops see exactly which dependency is down; a dependency outage does not get the API container restarted |
 | Invitation link instead of an emailed password | No password ever sits in a mailbox, a queue message or an admin's head; accepting the link also verifies the email |
 | `user.created` event for invitations | Users stay unaware of invitations and mail; a failed send never fails user creation |

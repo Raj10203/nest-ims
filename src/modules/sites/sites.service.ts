@@ -68,13 +68,13 @@ export class SitesService {
     if (dto.inchargeId && dto.inchargeId !== site.inchargeId) {
       await this.assertCanBeIncharge(actor, dto.inchargeId);
     }
-    await this.sites.update(id, dto);
+    // save(), not update(): AuditSubscriber records the change.
+    await this.sites.save({ id, ...dto });
     return this.findOneOrFail(id);
   }
 
   async remove(id: number): Promise<void> {
-    await this.findOneOrFail(id);
-    await this.sites.delete(id);
+    await this.sites.remove(await this.findOneOrFail(id));
   }
 
   isInchargeOfAnySite(userId: number): Promise<boolean> {
