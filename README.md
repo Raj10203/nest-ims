@@ -286,11 +286,11 @@ sequenceDiagram
 
 **1. Pull request review (`.github/workflows/claude-code-review.yml`)**
 - Runs on every PR that is **ready for review** (not drafts), and again on every new push to that PR; a newer push cancels the review still running.
-- Docs, CI files and lockfile-only changes are skipped.
 - Claude reads `CLAUDE.md` and the PR description, reviews the **whole diff**, traces **every caller of each changed method, helper, entity or response shape** (also in files the PR does not touch) to catch breakage in existing APIs, and posts one comment: issues bucketed as Critical / Important / Minor, merge notes (migrations, env vars, restarts) and a verdict (✅ mergeable, ⚠️ mergeable with fixes, ❌ not mergeable).
 - It is **read-only** (no checkout, commit or edits) and tuned to avoid noise: "No issues found" is a normal result.
 - Runs on **Claude Opus 5.5** (up to 100 turns, 40-minute timeout) so large PRs get a full review; for big diffs it reads file by file and skips `package-lock.json` and generated files.
-- The job **fails if no review comment was posted** for the head commit (the action itself reports success either way), and a "Show denied tool calls" step lists any command Claude tried that is not on the allowlist. The full transcript stays off because the repository is public.
+- **Merge warning:** the job, shown as the **Claude review** check, passes only when the review of the head commit says ✅ **Mergeable** (risk low). It fails on ⚠️ **Mergeable with fixes** (risk medium), on ❌ **Not mergeable** (risk high), and when no review comment was posted at all (the action itself reports success either way). It is deliberately **not a required check**: a failing review shows a red check and "Some checks were not successful" on the PR, but developers can still merge. A "Show denied tool calls" step lists any command Claude tried that is not on the allowlist; the full transcript stays off because the repository is public.
+- Docs, CI files and lockfile-only changes are skipped.
 
 **2. Build and push (`.github/workflows/ci-cd.yml`)**
 - Runs on every push to `master`.

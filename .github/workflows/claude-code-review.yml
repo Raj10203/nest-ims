@@ -16,8 +16,11 @@ concurrency:
   group: claude-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# The job fails unless the verdict is ✅, so a PR with open findings shows a red
+# "Claude review" check. It is not a required check: developers can still merge.
 jobs:
   review:
+    name: Claude review
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -144,14 +147,15 @@ jobs:
 
             ### Verdict
 
-            Decided only by the buckets, never by gut feeling:
-            - ✅ **Mergeable**: no Critical and no Important items (Minor items are fine).
-            - ⚠️ **Mergeable with fixes**: at least one Important item, no Critical.
-            - ❌ **Not mergeable**: at least one Critical item.
+            Exactly one of these three lines (copy it as written), followed by 1 to 2
+            sentences of reasoning. It is decided only by the buckets, never by gut feeling:
+            - `✅ **Mergeable**` when there are no Critical and no Important items (Minor items are fine).
+            - `⚠️ **Mergeable with fixes**` when there is at least one Important item and no Critical.
+            - `❌ **Not mergeable**` when there is at least one Critical item.
 
-            Risk follows the same rule: low for ✅, medium for ⚠️, high for ❌.
-
-            followed by 1 to 2 sentences of reasoning.
+            Risk follows the same rule: low for ✅, medium for ⚠️, high for ❌. This job
+            fails on ⚠️ and ❌ (a warning on the PR), so never soften a verified
+            Important or Critical finding to get a ✅, and never invent one.
 
             Rules: most severe first. No praise, no summary of what the PR does, no vague
             findings like "improve error handling". Always give a verdict.
@@ -172,18 +176,33 @@ jobs:
             | "\(.tool_name): \(.tool_input.command // .tool_input.file_path // "")"' \
             "$EXECUTION_FILE" || true
 
-      # The action reports success even when Claude ends without commenting.
-      - name: Check the review was posted
+      # Fails (a warning on the PR, not a merge block) unless the review for this
+      # commit says ✅. The action itself reports success even when Claude posted nothing.
+      - name: Check the review verdict
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           short="${SHA:0:7}"
-          if gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments \
-            --jq '.comments[].body' | grep -q "Reviewed commit \`$short\`"; then
-            echo "Review posted for $short"
-          else
+          body=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json comments \
+            | jq -r --arg marker "Reviewed commit \`$short\`" \
+              '[.comments[] | select(.body | contains($marker))] | last | .body // ""')
+          if [ -z "$body" ]; then
             echo "::error::Claude finished without posting a review for $short. See 'Show denied tool calls'."
             exit 1
           fi
+          risk=$(printf '%s\n' "$body" | grep -oE '\*\*Risk:\*\* (low|medium|high)' | head -n1 | awk '{print $2}')
+          case "$risk" in
+            low)
+              echo "✅ Mergeable (risk low) for $short" ;;
+            medium)
+              echo "::error::Claude review: ⚠️ Mergeable with fixes (risk medium) for $short. Fix the Important items and push to re-run."
+              exit 1 ;;
+            high)
+              echo "::error::Claude review: ❌ Not mergeable (risk high) for $short. Fix the Critical items and push to re-run."
+              exit 1 ;;
+            *)
+              echo "::error::Could not read the risk level from the review of $short."
+              exit 1 ;;
+          esac
