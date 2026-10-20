@@ -37,6 +37,10 @@ export type I18nTranslations = {
             "codeTaken": string;
             "inchargeRoleRequired": string;
         };
+        "files": {
+            "required": string;
+            "tooLarge": string;
+        };
     };
     "messages": {
         "otpQueued": string;

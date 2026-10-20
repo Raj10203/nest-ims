@@ -16,7 +16,7 @@ export interface DepthOneOptions<T> {
 // A related user (createdBy, incharge, ...) is shown as a summary: the email and
 // account status stay behind the users read scope, which returns 404 outside it.
 const SUMMARY_COLUMNS = new Map<unknown, readonly string[]>([
-  [User, ['id', 'firstName', 'middleName', 'lastName']],
+  [User, ['id', 'firstName', 'middleName', 'lastName', 'avatarUrl']],
 ]);
 
 const selectable = (metadata: EntityMetadata) =>
