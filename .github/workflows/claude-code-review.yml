@@ -60,26 +60,41 @@ jobs:
             3. The current body, for context only: `gh pr view ${{ github.event.pull_request.number }} --json body --jq .body`.
 
             ## Rules for what to declare (check every one against the diff)
-            - Schema: every file added or changed in `src/database/migrations/` and every
-              entity change in `src/entities/`: table and column added, changed or removed,
-              in plain words (what it stores), and whether it is safe while the old
-              version still runs (additive and nullable = safe; renamed, dropped or a new
-              NOT NULL column without default = not safe).
-            - Seeder: any change in `src/database/seeds/` (roles, permissions) means the
-              release must run `node dist/cli/cli.js seed` after the migrations.
-            - Migrations: any new migration means the release must run them before the
-              new version starts.
-            - Configuration: a variable added or changed in `.env.example` or `src/config/`
-              is a release step: name it, say what value to set and on which server (API,
-              worker). Optional ones are listed as optional.
+            - Schema: read every migration added or changed in `src/database/migrations/`
+              (the `up` SQL is the truth) and the entity changes in `src/entities/`. One
+              table row per changed column, index, foreign key or constraint; a whole
+              table added or dropped is one row with column "(table)". "Before" and
+              "After" give the type and nullability/default in short form
+              (`varchar(1024), null`, `int, not null, FK → users`), or "—" when it did not
+              exist / no longer exists. For a modified column, "Before" is its definition
+              on the base branch: read it with
+              `git show origin/${{ github.event.pull_request.base.ref }}:<entity file>` or from the
+              earlier migration that created it, and "After" is the new one, e.g.
+              `varchar(255), not null` → `varchar(1024), not null`. "Purpose" says in
+              plain words what it stores. "Safe with old version": Yes for additive,
+              nullable or defaulted, and widened (longer varchar, bigger int) changes; No
+              for renamed, dropped or narrowed columns and new NOT NULL columns without a
+              default.
+
+            ## Release notes: only what THIS PR needs beyond the standard deploy
+            Every deploy already builds the app, installs dependencies, runs pending
+            migrations, starts the new API and worker and checks that they are healthy.
+            Never list those, or generic checks such as "check /health" or "try the new
+            feature". List a step only when this PR causes it:
+            - Seeder: a change in `src/database/seeds/` (roles, permissions): run
+              `node dist/cli/cli.js seed` after the migrations.
+            - Configuration: a variable added or changed in `.env.example` or `src/config/`:
+              name it, the value to set and on which server (API, worker); say when it is
+              optional.
             - Third parties: a new external service, account, key, container, bucket,
-              queue, webhook or SMTP provider (`docker-compose.yml`, `package.json`,
-              `src/config/`) is a release step: what must be created or activated, and
-              where its credentials go.
-            - Restarts and order: worker restart after dependency changes, API before
-              worker, anything else the deploy order in CLAUDE.md implies.
-            - Breaking changes: a changed route, status code, request field, response field
-              or permission that API clients or users must adapt to.
+              queue, webhook or provider (`docker-compose.yml`, `package.json`,
+              `src/config/`): what must be created or activated, and where its credentials go.
+            - A migration that is NOT safe while the old version runs: the special order or
+              maintenance window it needs.
+            - One-off manual steps the code relies on: a data fix, a backfill, a file or
+              account to create by hand.
+            - Coordination: a changed route, request or response that needs the frontend
+              or another client released at the same time.
             - Business changes: features added, changed or removed and rules that changed
               (who may do what, limits, what users now see or are blocked from), in plain
               words. Group small related changes into one bullet.
@@ -104,29 +119,23 @@ jobs:
 
             ## Schema changes
 
-            - What changed and whether it is safe while the old version runs.
+            | Table | Column | Before | After | Purpose | Safe with old version |
+            | --- | --- | --- | --- | --- | --- |
+            | users | avatarUrl | — | varchar(1024), null | Link to the user's profile picture | Yes |
+            | sites | address | varchar(255), null | varchar(1024), null | Site's street address | Yes |
 
-            ## Breaking changes
-
-            - What API clients or users must adapt to.
+            (These rows only show the format: a new column and a modified one. Write
+            "None." instead of the table when no migration changed.)
 
             ## Release notes
 
-            ### Before deploy
-
-            - [ ] Configuration, third-party setup, anything that must exist first.
-
-            ### During deploy
-
-            - [ ] Commands in order (migrations, seed) and restarts.
-
-            ### After deploy
-
-            - [ ] Checks, data fixes, announcements.
+            - [ ] **Before deploy** / **After deploy**: one PR-specific step per line, with
+                  the exact variable name or command.
 
             <!-- auto-description:end -->
 
-            In "Release notes", write "Nothing extra." under a sub-heading that has no step.
+            In "Release notes", write "Nothing beyond the standard deploy." when this PR
+            needs no extra step.
 
             ## Output
             Write only the block above, from the start marker to the end marker, to
@@ -231,11 +240,13 @@ jobs:
             1. Get the diff with `gh pr diff ${{ github.event.pull_request.number }}`. Use
                `git diff`, `git log` and `git show` against `origin/${{ github.event.pull_request.base.ref }}`
                and read each changed file around the change before commenting on it.
-            2. Intent: does the code match the description? Check its "Schema changes",
-               "Breaking changes" and "Release notes" sections against the diff in both
-               directions. A missing release step (migration, seed run, env variable,
-               third-party setup) or an undeclared breaking change is Important; other
-               gaps in the description are Minor, never a reason to block the merge.
+            2. Intent: does the code match the description? Check its "Schema changes"
+               and "Release notes" sections against the diff in both directions. A
+               missing PR-specific release step (seed run, env variable, third-party
+               setup, unsafe migration, manual data fix) is Important; routine deploy
+               steps (build, migrations, restarts, health checks) must not be listed
+               there. Other gaps in the description are Minor, never a reason to block
+               the merge.
             3. Correctness and security: logic errors, edge cases, race conditions,
                unawaited promises, auth and permission checks, data leaking into logs or
                responses, migrations that would break the version still running.
@@ -245,10 +256,10 @@ jobs:
                does not touch, specs, the CLI and the worker), and read each caller.
                Check that every caller still works with the new signature, arguments,
                return value, thrown errors, loaded relations and side effects. Also
-               check API clients: a changed route, status code, request field or
-               response field is a breaking change and must be declared in the
-               description. A caller this PR breaks is this PR's issue; name the
-               caller's `path:line` in the finding.
+               check API clients: name every changed route, status code, request field
+               or response field in "Merge notes" so clients can be updated (it is not
+               a finding by itself). A caller this PR breaks is this PR's issue; name
+               the caller's `path:line` in the finding.
             5. Tests: new behaviour without a test.
             Do not flag formatting or lint issues (Prettier and oxlint cover them), or
             problems in code the PR does not touch, unless this PR's change breaks it
@@ -297,8 +308,8 @@ jobs:
             behaviour in normal use.
 
             **Important (should fix)**: a verified failure in a realistic edge case (error
-            path, concurrency, undeclared breaking change, migration that breaks the
-            running version), or risky new logic with no test at all.
+            path, concurrency, a caller in this repo broken by the change, migration that
+            breaks the running version), or risky new logic with no test at all.
 
             **Minor**: small improvements worth a mention. They never block the merge.
 
