@@ -1,0 +1,23 @@
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { User } from '../../entities/user.entity.js';
+import { AuthorizationModule } from '../authorization/authorization.module.js';
+import { JobsModule } from '../jobs/jobs.module.js';
+import { UsersModule } from '../users/users.module.js';
+import { InvitationsController } from './invitations.controller.js';
+import { InvitationsService } from './invitations.service.js';
+import { UserCreatedListener } from './user-created.listener.js';
+
+// Depends on UsersModule, never the other way round: users only emit
+// user.created, so there is no import cycle.
+@Module({
+  imports: [
+    TypeOrmModule.forFeature([User]),
+    UsersModule,
+    JobsModule,
+    AuthorizationModule,
+  ],
+  controllers: [InvitationsController],
+  providers: [InvitationsService, UserCreatedListener],
+})
+export class InvitationsModule {}

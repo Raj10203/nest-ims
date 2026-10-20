@@ -45,14 +45,16 @@ function setup() {
     upload: vi.fn().mockResolvedValue('https://blob.test/avatars/new'),
     deleteByUrl: vi.fn().mockResolvedValue(undefined),
   };
+  const events = { emit: vi.fn() };
   const service = new UsersService(
     users as any,
     {} as any,
     new CaslAbilityFactory(),
     sites as any,
     storage as any,
+    events as any,
   );
-  return { service, users, sites, storage };
+  return { service, users, sites, storage, events };
 }
 
 describe('UsersService.update', () => {

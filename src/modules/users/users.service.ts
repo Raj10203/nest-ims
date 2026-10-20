@@ -8,8 +8,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { assertPasswordAvoidsNames } from '../../common/security/password-policy.js';
 import { hashSecret } from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
 import {
@@ -22,6 +24,7 @@ import { BlobStorageService } from '../storage/blob-storage.service.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
+import { USER_CREATED, UserCreatedEvent } from './events/user-created.event.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
 import { depthOne } from '../../common/typeorm/depth-one.js';
 
@@ -35,6 +38,7 @@ export class UsersService {
     // Pick: see the matching constructor in SitesService.
     private readonly sitesService: Pick<SitesService, 'isInchargeOfAnySite'>,
     private readonly storage: BlobStorageService,
+    private readonly events: EventEmitter2,
   ) {}
 
   async create(actor: User, dto: CreateUserDto): Promise<User> {
@@ -65,10 +69,14 @@ export class UsersService {
         middleName: dto.middleName ?? null,
         lastName: dto.lastName,
         email: dto.email,
-        password: await hashSecret(dto.password),
         roleId: role.id,
         createdById: actor.id,
       }),
+    );
+    // The invitation email is sent by a listener (InvitationsModule).
+    this.events.emit(
+      USER_CREATED,
+      new UserCreatedEvent(created.id, created.email, created.firstName),
     );
     return this.findOneOrFail(created.id);
   }
@@ -102,6 +110,12 @@ export class UsersService {
     }
 
     const { password, ...rest } = dto;
+    if (password) {
+      assertPasswordAvoidsNames(password, [
+        dto.firstName ?? target.firstName,
+        dto.lastName ?? target.lastName,
+      ]);
+    }
     await this.users.update(id, {
       ...rest,
       // A code sent to the old address must not verify the new one.
@@ -113,7 +127,14 @@ export class UsersService {
             emailOtpAttempts: 0,
           }
         : {}),
-      ...(password ? { password: await hashSecret(password) } : {}),
+      // A password set here also cancels a pending invitation link.
+      ...(password
+        ? {
+            password: await hashSecret(password),
+            inviteTokenHash: null,
+            inviteExpiresAt: null,
+          }
+        : {}),
     });
     return this.findOneOrFail(id);
   }
@@ -151,11 +172,17 @@ export class UsersService {
     await this.storage.deleteByUrl(target.avatarUrl);
   }
 
-  // Anyone may change their own avatar; another user's needs the update rule.
-  private async findAvatarOwner(actor: User, id: number): Promise<User> {
+  async findOneToUpdate(actor: User, id: number): Promise<User> {
     const target = await this.findOneOrFail(id);
-    if (actor.id !== id) this.assertCan(actor, 'update', target);
+    this.assertCan(actor, 'update', target);
     return target;
+  }
+
+  // Anyone may change their own avatar; another user's needs the update rule.
+  private findAvatarOwner(actor: User, id: number): Promise<User> {
+    return actor.id === id
+      ? this.findOneOrFail(id)
+      : this.findOneToUpdate(actor, id);
   }
 
   // --- used by the auth module ---

@@ -33,5 +33,20 @@
   "files": {
     "required": "A file is required",
     "tooLarge": "The file is too large; the maximum is {maxKb} KB"
+  },
+  "invite": {
+    "invalid": "This invitation link is invalid, already used or expired",
+    "alreadyAccepted": "This user has already set a password"
+  },
+  "mfa": {
+    "invalidChallenge": "Your sign-in has expired; log in again",
+    "wrongPassword": "The password is incorrect"
+  },
+  "password": {
+    "uppercase": "The password needs at least one capital letter",
+    "lowercase": "The password needs at least one small letter",
+    "digit": "The password needs at least one digit",
+    "symbol": "The password needs at least one symbol (such as ! @ # $)",
+    "containsName": "The password must not contain your first or last name"
   }
 }

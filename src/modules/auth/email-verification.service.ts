@@ -1,4 +1,3 @@
-import { randomInt } from 'node:crypto';
 import {
   BadRequestException,
   ConflictException,
@@ -13,7 +12,11 @@ import {
   OTP_RESEND_COOLDOWN_SECONDS,
   OTP_TTL_MINUTES,
 } from '../../common/otp.constants.js';
-import { hashSecret, verifySecret } from '../../common/security/secret-hash.js';
+import {
+  generateOtp,
+  hashSecret,
+  verifySecret,
+} from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
 import { JobQueueService } from '../jobs/job-queue.service.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
@@ -141,10 +144,6 @@ export class EmailVerificationService {
       .where('user.id = :id', { id })
       .getOne();
   }
-}
-
-function generateOtp(): string {
-  return randomInt(0, 1_000_000).toString().padStart(6, '0');
 }
 
 function tooSoon(): HttpException {

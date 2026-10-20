@@ -2,12 +2,16 @@ import { ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 
-function setup(user: object, meta: { allowUnverified?: boolean } = {}) {
+function setup(
+  user: object,
+  meta: { allowUnverified?: boolean } = {},
+  payload: object = { sub: 1 },
+) {
   const reflector = new Reflector();
   vi.spyOn(reflector, 'getAllAndOverride').mockImplementation((key) =>
     key === 'allow_unverified_email' ? meta.allowUnverified : undefined,
   );
-  const jwt = { verifyAsync: vi.fn().mockResolvedValue({ sub: 1 }) };
+  const jwt = { verifyAsync: vi.fn().mockResolvedValue(payload) };
   const users = { findById: vi.fn().mockResolvedValue(user) };
   const request = { headers: { authorization: 'Bearer token' } };
   const context = {
@@ -38,5 +42,16 @@ describe('JwtAuthGuard email verification', () => {
   it('lets a verified user through', async () => {
     const { guard, context } = setup({ id: 1, emailVerifiedAt: new Date() });
     await expect(guard.canActivate(context)).resolves.toBe(true);
+  });
+
+  it('rejects an MFA challenge token used as an access token', async () => {
+    const { guard, context } = setup(
+      { id: 1, emailVerifiedAt: new Date() },
+      {},
+      { sub: 1, typ: 'mfa' },
+    );
+    await expect(guard.canActivate(context)).rejects.toThrow(
+      'errors.auth.invalidAccessToken',
+    );
   });
 });

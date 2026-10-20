@@ -6,6 +6,17 @@ export interface JobPayloads {
     otp: string;
     expiresInMinutes: number;
   };
+  'mail.send-invite': {
+    to: string;
+    firstName: string;
+    url: string;
+    expiresInHours: number;
+  };
+  'mail.send-login-otp': {
+    to: string;
+    otp: string;
+    expiresInMinutes: number;
+  };
 }
 
 export type JobType = keyof JobPayloads;
