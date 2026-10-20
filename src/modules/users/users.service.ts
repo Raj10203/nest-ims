@@ -21,6 +21,7 @@ import { CreateUserDto } from './dto/create-user.dto.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
+import { depthOne } from '../../common/typeorm/depth-one.js';
 
 @Injectable()
 export class UsersService {
@@ -72,6 +73,7 @@ export class UsersService {
   async findAll(actor: User, { page, limit }: ListUsersQueryDto) {
     const ability = this.abilityFactory.createForUser(actor);
     const [items, total] = await this.users.findAndCount({
+      ...depthOne(this.users),
       where: readableUsersWhere(actor, ability),
       order: { id: 'ASC' },
       skip: (page - 1) * limit,
@@ -124,6 +126,7 @@ export class UsersService {
 
   // --- used by the auth module ---
 
+  // With the role's permissions: CaslAbilityFactory builds the ability from them.
   findById(id: number): Promise<User | null> {
     return this.users.findOne({ where: { id } });
   }
@@ -150,7 +153,10 @@ export class UsersService {
   }
 
   private async findOneOrFail(id: number): Promise<User> {
-    const user = await this.findById(id);
+    const user = await this.users.findOne({
+      ...depthOne(this.users),
+      where: { id },
+    });
     if (!user)
       throw new NotFoundException(i18nMessage('errors.users.notFound', { id }));
     return user;

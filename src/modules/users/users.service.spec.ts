@@ -10,6 +10,7 @@ const admin = {
     name: RoleName.ADMIN,
     level: 80,
     permissions: [
+      { action: 'read', subject: 'User' },
       { action: 'update', subject: 'User' },
       { action: 'delete', subject: 'User' },
     ],
@@ -26,6 +27,13 @@ const target = {
 function setup() {
   const users = {
     findOne: vi.fn().mockResolvedValue(target),
+    findAndCount: vi.fn(),
+    metadata: {
+      relations: [
+        { propertyName: 'role', isManyToOne: true },
+        { propertyName: 'createdBy', isManyToOne: true },
+      ],
+    },
     existsBy: vi.fn().mockResolvedValue(false),
     update: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
@@ -57,6 +65,26 @@ describe('UsersService.update', () => {
     const { service, users } = setup();
     await service.update(admin, 2, { firstName: 'Ann' });
     expect(users.update).toHaveBeenCalledWith(2, { firstName: 'Ann' });
+  });
+});
+
+describe('UsersService responses', () => {
+  const depthOneQuery = expect.objectContaining({
+    relations: { role: true, createdBy: true },
+    loadEagerRelations: false,
+  });
+
+  it('lists users with their direct relations only', async () => {
+    const { service, users } = setup();
+    users.findAndCount.mockResolvedValue([[target], 1]);
+    await service.findAll(admin, { page: 1, limit: 20 });
+    expect(users.findAndCount).toHaveBeenCalledWith(depthOneQuery);
+  });
+
+  it('returns a single user the same way', async () => {
+    const { service, users } = setup();
+    await service.findOneFor(admin, 2);
+    expect(users.findOne).toHaveBeenCalledWith(depthOneQuery);
   });
 });
 

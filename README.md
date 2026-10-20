@@ -119,6 +119,7 @@ flowchart LR
 - **Security headers and CORS:** Helmet on every response (CSP without `upgrade-insecure-requests`, so the docs also load over plain http locally). CORS is off unless `CORS_ORIGINS` lists the allowed browser origins.
 - **Logging:** pino-http. Every line has method, url, status, time, `userId` and `role`. Bodies are logged only in development (or opt-in in production); any field named like password/secret/token/otp/hash/authorization is masked at any depth.
 - **Database:** `synchronize` is off. Every schema change is a reviewed migration and must stay backward compatible, because the old version keeps serving while the new schema is applied.
+- **Response depth:** API responses include an entity's direct (to-one) relations and stop there: a user comes with its `role` and `createdBy`, a site with its `createdBy` and `incharge`, but not the relations of those. `depthOne(repository)` builds these find options from the entity metadata, so new entities follow the rule automatically. The internal user lookup for authorization keeps the full eager chain, because the permissions are needed there.
 - **Caching:** the roles list is cached in memory for an hour.
 - **Graceful shutdown:** `enableShutdownHooks()` so `docker stop` is instant instead of waiting for SIGKILL.
 
@@ -286,8 +287,10 @@ sequenceDiagram
 **1. Pull request review (`.github/workflows/claude-code-review.yml`)**
 - Runs on every PR that is **ready for review** (not drafts), and again on every new push to that PR; a newer push cancels the review still running.
 - Docs, CI files and lockfile-only changes are skipped.
-- Claude reads `CLAUDE.md` and the PR description, reviews the **whole diff** and posts one comment: issues bucketed as Critical / Important / Minor, merge notes (migrations, env vars, restarts) and a verdict (✅ mergeable, ⚠️ mergeable with fixes, ❌ not mergeable).
+- Claude reads `CLAUDE.md` and the PR description, reviews the **whole diff**, traces **every caller of each changed method, helper, entity or response shape** (also in files the PR does not touch) to catch breakage in existing APIs, and posts one comment: issues bucketed as Critical / Important / Minor, merge notes (migrations, env vars, restarts) and a verdict (✅ mergeable, ⚠️ mergeable with fixes, ❌ not mergeable).
 - It is **read-only** (no checkout, commit or edits) and tuned to avoid noise: "No issues found" is a normal result.
+- Runs on **Claude Opus 5.5** (up to 100 turns, 40-minute timeout) so large PRs get a full review; for big diffs it reads file by file and skips `package-lock.json` and generated files.
+- The job **fails if no review comment was posted** for the head commit (the action itself reports success either way), and a "Show denied tool calls" step lists any command Claude tried that is not on the allowlist. The full transcript stays off because the repository is public.
 
 **2. Build and push (`.github/workflows/ci-cd.yml`)**
 - Runs on every push to `master`.

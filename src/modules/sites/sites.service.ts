@@ -16,6 +16,7 @@ import { CreateSiteDto } from './dto/create-site.dto.js';
 import { ListSitesQueryDto } from './dto/list-sites-query.dto.js';
 import { UpdateSiteDto } from './dto/update-site.dto.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
+import { depthOne } from '../../common/typeorm/depth-one.js';
 
 // Sites are shared: anyone holding the permission (see role-permissions.ts)
 // can act on every site, so there is no per-record scoping here.
@@ -32,7 +33,7 @@ export class SitesService {
   async create(actor: User, dto: CreateSiteDto): Promise<Site> {
     await this.assertCodeFree(dto.code);
     if (dto.inchargeId) await this.assertCanBeIncharge(actor, dto.inchargeId);
-    return this.sites.save(
+    const saved = await this.sites.save(
       this.sites.create({
         name: dto.name,
         code: dto.code,
@@ -44,10 +45,12 @@ export class SitesService {
         createdById: actor.id,
       }),
     );
+    return this.findOneOrFail(saved.id);
   }
 
   async findAll({ page, limit }: ListSitesQueryDto) {
     const [items, total] = await this.sites.findAndCount({
+      ...depthOne(this.sites),
       order: { id: 'ASC' },
       skip: (page - 1) * limit,
       take: limit,
@@ -95,7 +98,10 @@ export class SitesService {
   }
 
   private async findOneOrFail(id: number): Promise<Site> {
-    const site = await this.sites.findOneBy({ id });
+    const site = await this.sites.findOne({
+      ...depthOne(this.sites),
+      where: { id },
+    });
     if (!site)
       throw new NotFoundException(i18nMessage('errors.sites.notFound', { id }));
     return site;
