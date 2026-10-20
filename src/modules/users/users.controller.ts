@@ -1,16 +1,27 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
   HttpCode,
   Param,
+  ParseFilePipe,
   Patch,
   Post,
+  Put,
   Query,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiOperation,
+} from '@nestjs/swagger';
+import { i18nMessage } from '../../common/i18n/i18n-message.js';
 import { idParamSchema } from '../../common/zod/id-param.schema.js';
 import { User } from '../../entities/user.entity.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
@@ -22,6 +33,10 @@ import {
   type ListUsersQueryDto,
 } from './dto/list-users-query.dto.js';
 import { updateUserSchema, type UpdateUserDto } from './dto/update-user.dto.js';
+import {
+  AVATAR_MAX_BYTES,
+  AvatarUploadInterceptor,
+} from './avatar-upload.interceptor.js';
 import { UsersService } from './users.service.js';
 
 @ApiBearerAuth()
@@ -71,6 +86,50 @@ export class UsersController {
     @Body({ schema: updateUserSchema }) dto: UpdateUserDto,
   ) {
     return this.usersService.update(actor, id, dto);
+  }
+
+  @ApiOperation({
+    summary: `Upload an avatar for yourself or a user you may update (max ${AVATAR_MAX_BYTES / 1024} KB)`,
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: { file: { type: 'string', format: 'binary' } },
+    },
+  })
+  @Put(':id/avatar')
+  // Every role may read itself; the service applies the self-or-update rule
+  // (also for removeAvatar below).
+  @CheckAbility('read', 'User')
+  @UseInterceptors(AvatarUploadInterceptor)
+  setAvatar(
+    @CurrentUser() actor: User,
+    @Param('id', { schema: idParamSchema }) id: number,
+    @UploadedFile(
+      new ParseFilePipe({
+        exceptionFactory: () =>
+          new BadRequestException(i18nMessage('errors.files.required')),
+      }),
+    )
+    file: Express.Multer.File,
+  ) {
+    return this.usersService.setAvatar(actor, id, file);
+  }
+
+  @ApiOperation({
+    summary:
+      'Remove the avatar of yourself or a user you may update (clients show their own placeholder)',
+  })
+  @Delete(':id/avatar')
+  @HttpCode(204)
+  @CheckAbility('read', 'User')
+  removeAvatar(
+    @CurrentUser() actor: User,
+    @Param('id', { schema: idParamSchema }) id: number,
+  ) {
+    return this.usersService.removeAvatar(actor, id);
   }
 
   @ApiOperation({ summary: 'Delete a user' })

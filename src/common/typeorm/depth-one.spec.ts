@@ -10,6 +10,7 @@ const userSummary = {
   firstName: true,
   middleName: true,
   lastName: true,
+  avatarUrl: true,
 };
 
 describe('depthOne', () => {

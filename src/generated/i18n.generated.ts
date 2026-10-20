@@ -37,10 +37,35 @@ export type I18nTranslations = {
             "codeTaken": string;
             "inchargeRoleRequired": string;
         };
+        "files": {
+            "required": string;
+            "tooLarge": string;
+        };
+        "invite": {
+            "invalid": string;
+            "alreadyAccepted": string;
+        };
+        "mfa": {
+            "invalidChallenge": string;
+            "wrongPassword": string;
+            "locked": string;
+        };
+        "password": {
+            "uppercase": string;
+            "lowercase": string;
+            "digit": string;
+            "symbol": string;
+            "containsName": string;
+        };
     };
     "messages": {
         "otpQueued": string;
         "emailVerified": string;
+        "passwordSet": string;
+        "invitationSent": string;
+        "mfaCodeSent": string;
+        "mfaEnabled": string;
+        "mfaDisabled": string;
     };
 };
 /* prettier-ignore */

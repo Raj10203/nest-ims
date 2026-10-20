@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Post } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Post, Put } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { minutes, Throttle } from '@nestjs/throttler';
 import { I18n, I18nContext } from 'nestjs-i18n';
@@ -9,6 +9,13 @@ import { AuthService } from './auth.service.js';
 import { CurrentUser } from './current-user.decorator.js';
 import { EmailVerificationService } from './email-verification.service.js';
 import { loginSchema, type LoginDto } from './dto/login.dto.js';
+import {
+  loginMfaSchema,
+  setMfaSchema,
+  type LoginMfaDto,
+  type SetMfaDto,
+} from './dto/mfa.dto.js';
+import { MfaService } from './mfa.service.js';
 import {
   refreshTokenSchema,
   type RefreshTokenDto,
@@ -26,17 +33,57 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly emailVerification: EmailVerificationService,
+    private readonly mfa: MfaService,
   ) {}
 
   @ApiOperation({
-    summary: 'Log in (Swagger authorizes itself with the returned token)',
+    summary:
+      'Log in. Returns tokens (Swagger authorizes itself with them), or { mfaRequired, challengeToken } when the user has MFA on',
   })
   @Public()
   @Throttle({ default: { limit: 5, ttl: minutes(1) } })
   @Post('login')
   @HttpCode(200)
-  login(@Body({ schema: loginSchema }) dto: LoginDto) {
-    return this.authService.login(dto.email, dto.password);
+  async login(
+    @Body({ schema: loginSchema }) dto: LoginDto,
+    @I18n() i18n: I18nContext<I18nTranslations>,
+  ) {
+    const result = await this.authService.login(dto.email, dto.password);
+    return 'mfaRequired' in result
+      ? { ...result, message: i18n.t('messages.mfaCodeSent') }
+      : result;
+  }
+
+  @ApiOperation({
+    summary:
+      'Second login step with MFA: the challenge token and the emailed code',
+  })
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: minutes(1) } })
+  @Post('login/mfa')
+  @HttpCode(200)
+  loginWithMfa(@Body({ schema: loginMfaSchema }) dto: LoginMfaDto) {
+    return this.authService.loginWithMfa(dto.challengeToken, dto.otp);
+  }
+
+  @ApiOperation({
+    summary: 'Turn the emailed sign-in code on or off for yourself',
+  })
+  @ApiBearerAuth()
+  @Throttle({ default: { limit: 5, ttl: minutes(1) } })
+  @Put('me/mfa')
+  @HttpCode(200)
+  async setMfa(
+    @CurrentUser() user: User,
+    @Body({ schema: setMfaSchema }) dto: SetMfaDto,
+    @I18n() i18n: I18nContext<I18nTranslations>,
+  ) {
+    await this.mfa.setEnabled(user, dto.enabled, dto.password);
+    return {
+      message: i18n.t(
+        dto.enabled ? 'messages.mfaEnabled' : 'messages.mfaDisabled',
+      ),
+    };
   }
 
   @ApiOperation({ summary: 'Exchange a refresh token for a new token pair' })

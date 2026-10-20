@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { subject } from '@casl/ability';
 import {
   ConflictException,
@@ -7,8 +8,10 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { assertPasswordAvoidsNames } from '../../common/security/password-policy.js';
 import { hashSecret } from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
 import {
@@ -17,9 +20,15 @@ import {
 } from '../authorization/casl-ability.factory.js';
 import { RolesService } from '../roles/roles.service.js';
 import { SitesService } from '../sites/sites.service.js';
+import { BlobStorageService } from '../storage/blob-storage.service.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
+import { USER_CREATED, UserCreatedEvent } from './events/user-created.event.js';
+import {
+  USER_EMAIL_CHANGED,
+  UserEmailChangedEvent,
+} from './events/user-email-changed.event.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
 import { depthOne } from '../../common/typeorm/depth-one.js';
 
@@ -32,6 +41,8 @@ export class UsersService {
     @Inject(forwardRef(() => SitesService))
     // Pick: see the matching constructor in SitesService.
     private readonly sitesService: Pick<SitesService, 'isInchargeOfAnySite'>,
+    private readonly storage: BlobStorageService,
+    private readonly events: EventEmitter2,
   ) {}
 
   async create(actor: User, dto: CreateUserDto): Promise<User> {
@@ -62,10 +73,14 @@ export class UsersService {
         middleName: dto.middleName ?? null,
         lastName: dto.lastName,
         email: dto.email,
-        password: await hashSecret(dto.password),
         roleId: role.id,
         createdById: actor.id,
       }),
+    );
+    // The invitation email is sent by a listener (InvitationsModule).
+    this.events.emit(
+      USER_CREATED,
+      new UserCreatedEvent(created.id, created.email, created.firstName),
     );
     return this.findOneOrFail(created.id);
   }
@@ -92,27 +107,51 @@ export class UsersService {
     const target = await this.findOneOrFail(id);
     this.assertCan(actor, 'update', target);
 
-    if (dto.email && dto.email !== target.email) {
+    const emailChanged = !!dto.email && dto.email !== target.email;
+    if (emailChanged) {
       if (await this.users.existsBy({ email: dto.email })) {
         throw new ConflictException(i18nMessage('errors.users.emailTaken'));
       }
     }
 
     const { password, ...rest } = dto;
+    if (password) {
+      assertPasswordAvoidsNames(password, [
+        dto.firstName ?? target.firstName,
+        dto.lastName ?? target.lastName,
+      ]);
+    }
     await this.users.update(id, {
       ...rest,
-      // A code sent to the old address must not verify the new one.
-      ...(dto.email && dto.email !== target.email
+      // A code or invitation link sent to the old address must not verify (or
+      // claim) the new one. A pending user is re-invited by the event below.
+      ...(emailChanged
         ? {
             emailVerifiedAt: null,
             emailOtpHash: null,
             emailOtpExpiresAt: null,
             emailOtpAttempts: 0,
+            inviteTokenHash: null,
+            inviteExpiresAt: null,
           }
         : {}),
-      ...(password ? { password: await hashSecret(password) } : {}),
+      // A password set here also cancels a pending invitation link.
+      ...(password
+        ? {
+            password: await hashSecret(password),
+            inviteTokenHash: null,
+            inviteExpiresAt: null,
+          }
+        : {}),
     });
-    return this.findOneOrFail(id);
+    const updated = await this.findOneOrFail(id);
+    if (emailChanged) {
+      this.events.emit(
+        USER_EMAIL_CHANGED,
+        new UserEmailChangedEvent(id, updated.email, updated.firstName),
+      );
+    }
+    return updated;
   }
 
   async remove(actor: User, id: number): Promise<void> {
@@ -122,6 +161,43 @@ export class UsersService {
       throw new ConflictException(i18nMessage('errors.users.inchargeOfSite'));
     }
     await this.users.delete(id);
+    if (target.avatarUrl) await this.storage.deleteByUrl(target.avatarUrl);
+  }
+
+  async setAvatar(
+    actor: User,
+    id: number,
+    file: { buffer: Buffer; mimetype: string },
+  ): Promise<User> {
+    const target = await this.findAvatarOwner(actor, id);
+    const avatarUrl = await this.storage.upload(
+      `users/${id}/${randomUUID()}`,
+      file.buffer,
+      file.mimetype,
+    );
+    await this.users.update(id, { avatarUrl });
+    if (target.avatarUrl) await this.storage.deleteByUrl(target.avatarUrl);
+    return this.findOneOrFail(id);
+  }
+
+  async removeAvatar(actor: User, id: number): Promise<void> {
+    const target = await this.findAvatarOwner(actor, id);
+    if (!target.avatarUrl) return;
+    await this.users.update(id, { avatarUrl: null });
+    await this.storage.deleteByUrl(target.avatarUrl);
+  }
+
+  async findOneToUpdate(actor: User, id: number): Promise<User> {
+    const target = await this.findOneOrFail(id);
+    this.assertCan(actor, 'update', target);
+    return target;
+  }
+
+  // Anyone may change their own avatar; another user's needs the update rule.
+  private findAvatarOwner(actor: User, id: number): Promise<User> {
+    return actor.id === id
+      ? this.findOneOrFail(id)
+      : this.findOneToUpdate(actor, id);
   }
 
   // --- used by the auth module ---

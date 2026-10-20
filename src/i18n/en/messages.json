@@ -1,4 +1,9 @@
 {
   "otpQueued": "Verification code queued for delivery",
-  "emailVerified": "Email verified"
+  "emailVerified": "Email verified",
+  "passwordSet": "Your password is set; you can log in now",
+  "invitationSent": "Invitation email queued",
+  "mfaCodeSent": "We emailed you a sign-in code",
+  "mfaEnabled": "Sign-in codes are now required at login",
+  "mfaDisabled": "Sign-in codes are no longer required at login"
 }

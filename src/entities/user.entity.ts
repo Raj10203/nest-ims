@@ -1,4 +1,4 @@
-import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
+import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
 import { BaseEntity } from './base.entity.js';
 import { Role } from './role.entity.js';
 
@@ -19,8 +19,32 @@ export class User extends BaseEntity {
   @Column({ type: 'timestamp', nullable: true })
   emailVerifiedAt: Date | null;
 
-  @Column({ length: 255, select: false })
-  password: string;
+  @Column({ type: 'varchar', length: 1024, nullable: true })
+  avatarUrl: string | null;
+
+  // Null until the user accepts the invitation and sets it.
+  @Column({ type: 'varchar', length: 255, nullable: true, select: false })
+  password: string | null;
+
+  // SHA-256 of the invitation link's token (looked up by hash; see hashToken).
+  @Index()
+  @Column({ type: 'char', length: 64, nullable: true, select: false })
+  inviteTokenHash: string | null;
+
+  @Column({ type: 'timestamp', nullable: true, select: false })
+  inviteExpiresAt: Date | null;
+
+  @Column({ default: false })
+  mfaEnabled: boolean;
+
+  @Column({ type: 'varchar', length: 255, nullable: true, select: false })
+  mfaOtpHash: string | null;
+
+  @Column({ type: 'timestamp', nullable: true, select: false })
+  mfaOtpExpiresAt: Date | null;
+
+  @Column({ type: 'int', default: 0, select: false })
+  mfaOtpAttempts: number;
 
   @Column({ type: 'varchar', length: 255, nullable: true, select: false })
   emailOtpHash: string | null;

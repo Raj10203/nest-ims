@@ -19,10 +19,17 @@ services:
       # Only for GET /health (the worker sends the mail)
       MAIL_HOST: mailpit
       MAIL_PORT: 1025
+      # Azurite's published development account (not a secret)
+      AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      AZURE_STORAGE_CONTAINER: avatars
+      # Blob URLs stored in the DB must open in the host's browser, not only inside Docker
+      AZURE_STORAGE_PUBLIC_URL: http://localhost:10000/devstoreaccount1
     depends_on:
       mysql:
         condition: service_healthy
       rabbitmq:
+        condition: service_started
+      azurite:
         condition: service_started
 
   mysql:
@@ -85,6 +92,17 @@ services:
     healthcheck:
       disable: true
 
+  # Azure Blob Storage emulator; production uses a real storage account
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    container_name: nest_ims_azurite
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data --skipApiVersionCheck
+    ports:
+      - "10000:10000" # Blob service
+    volumes:
+      - azurite_data:/data
+
 volumes:
+  azurite_data:
   mysql_data:
   rabbitmq_data:

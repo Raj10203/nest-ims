@@ -11,6 +11,7 @@ import { Public } from '../auth/public.decorator.js';
 import { HEALTH_TIMEOUT_MS } from './health.constants.js';
 import { QueueHealthIndicator } from './queue.health.js';
 import { SmtpHealthIndicator } from './smtp.health.js';
+import { StorageHealthIndicator } from './storage.health.js';
 
 // Served at /health and /health/live, outside the global /api prefix (see app.setup.ts).
 @Public()
@@ -21,6 +22,7 @@ export class HealthController {
     private readonly db: TypeOrmHealthIndicator,
     private readonly queue: QueueHealthIndicator,
     private readonly smtp: SmtpHealthIndicator,
+    private readonly storage: StorageHealthIndicator,
   ) {}
 
   // Each dependency is reported under info (up) or error (down); any down
@@ -34,6 +36,7 @@ export class HealthController {
       () => this.db.pingCheck('database').withTimeout(HEALTH_TIMEOUT_MS),
       () => this.queue.broker(),
       () => this.queue.worker(),
+      () => this.storage.check(),
       ...(MAIL_HOST && MAIL_PORT
         ? [
             () =>

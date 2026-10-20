@@ -5,6 +5,7 @@ import { hashSecret, verifySecret } from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
 import { UsersService } from '../users/users.service.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
+import { MfaService } from './mfa.service.js';
 
 export interface TokenPair {
   accessToken: string;
@@ -16,17 +17,23 @@ export class AuthService {
   constructor(
     private readonly users: UsersService,
     private readonly jwt: JwtService,
+    private readonly mfa: MfaService,
   ) {}
 
   async login(email: string, password: string) {
     const found = await this.users.findByEmailWithPassword(email);
-    if (!found || !(await verifySecret(password, found.password))) {
+    // No password yet means the invitation was not accepted.
+    if (!found?.password || !(await verifySecret(password, found.password))) {
       throw new UnauthorizedException(
         i18nMessage('errors.auth.invalidCredentials'),
       );
     }
-    const user = await this.users.findById(found.id);
-    return { user, ...(await this.issueTokens(found.id)) };
+    if (found.mfaEnabled) return this.mfa.startChallenge(found);
+    return this.signIn(found.id);
+  }
+
+  async loginWithMfa(challengeToken: string, otp: string) {
+    return this.signIn(await this.mfa.completeChallenge(challengeToken, otp));
   }
 
   // Rotation: each refresh token works once; the new pair replaces the stored hash.
@@ -58,6 +65,11 @@ export class AuthService {
 
   logout(user: User): Promise<void> {
     return this.users.setRefreshTokenHash(user.id, null);
+  }
+
+  private async signIn(userId: number) {
+    const user = await this.users.findById(userId);
+    return { user, ...(await this.issueTokens(userId)) };
   }
 
   private async issueTokens(userId: number): Promise<TokenPair> {
