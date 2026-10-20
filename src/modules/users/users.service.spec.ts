@@ -29,10 +29,12 @@ function setup() {
     findOne: vi.fn().mockResolvedValue(target),
     findAndCount: vi.fn(),
     metadata: {
-      relations: [
-        { propertyName: 'role', isManyToOne: true },
-        { propertyName: 'createdBy', isManyToOne: true },
-      ],
+      columns: [],
+      relations: ['role', 'createdBy'].map((propertyName) => ({
+        propertyName,
+        isManyToOne: true,
+        inverseEntityMetadata: { target: undefined, columns: [] },
+      })),
     },
     existsBy: vi.fn().mockResolvedValue(false),
     update: vi.fn().mockResolvedValue(undefined),

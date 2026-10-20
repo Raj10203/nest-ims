@@ -12,7 +12,7 @@ function setup(incharge: Partial<User> | Error) {
     create: vi.fn((site) => site),
     save: vi.fn((site) => Promise.resolve({ id: 1, ...site })),
     findOne: vi.fn().mockResolvedValue({ id: 1 }),
-    metadata: { relations: [] },
+    metadata: { columns: [], relations: [] },
   };
   const users = {
     findOneFor: vi.fn(() =>

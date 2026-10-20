@@ -119,13 +119,13 @@ flowchart LR
 - **Security headers and CORS:** Helmet on every response (CSP without `upgrade-insecure-requests`, so the docs also load over plain http locally). CORS is off unless `CORS_ORIGINS` lists the allowed browser origins.
 - **Logging:** pino-http. Every line has method, url, status, time, `userId` and `role`. Bodies are logged only in development (or opt-in in production); any field named like password/secret/token/otp/hash/authorization is masked at any depth.
 - **Database:** `synchronize` is off. Every schema change is a reviewed migration and must stay backward compatible, because the old version keeps serving while the new schema is applied.
-- **Response depth:** API responses include an entity's direct (to-one) relations and stop there: a user comes with its `role` and `createdBy`, a site with its `createdBy` and `incharge`, but not the relations of those. `depthOne(repository)` builds these find options from the entity metadata, so new entities follow the rule automatically. The internal user lookup for authorization keeps the full eager chain, because the permissions are needed there.
+- **Response depth:** API responses include an entity's direct (to-one) relations and stop there: a user comes with its `role` and `createdBy`, a site with its `createdBy` and `incharge`, but not the relations of those. A related user is only a summary (`id`, first, middle and last name): email and account status stay behind the users read scope, which answers 404 outside it. `depthOne(repository)` builds these find options from the entity metadata, so new entities follow the rule automatically. The internal user lookup for authorization keeps the full eager chain, because the permissions are needed there.
 - **Caching:** the roles list is cached in memory for an hour.
 - **Graceful shutdown:** `enableShutdownHooks()` so `docker stop` is instant instead of waiting for SIGKILL.
 
 ### 1.9 Health checks (Terminus)
 
-- `GET /health` checks every dependency and reports each one separately: `database` (MySQL ping), `rabbitmq` (broker connection), `worker` (at least one consumer on the `jobs` queue, plus pending and dead job counts) and `mail` (SMTP greeting; only when `MAIL_HOST` and `MAIL_PORT` are set for the API). Each check times out after 3 s. Up services are listed under `info`, down ones under `error` with a reason, and any down service makes the response a **503**:
+- `GET /health` checks every dependency and reports each one separately: `database` (MySQL ping), `rabbitmq` (broker connection), `worker` (at least one consumer on the `jobs` queue; queue sizes are left out of this public response, see the RabbitMQ UI) and `mail` (SMTP greeting; only when `MAIL_HOST` and `MAIL_PORT` are set for the API). Each check times out after 3 s. Up services are listed under `info`, down ones under `error` with a reason, and any down service makes the response a **503**:
 
   ```json
   { "status": "error",
@@ -133,7 +133,7 @@ flowchart LR
     "error": { "worker": { "status": "down", "message": "No worker is consuming the jobs queue" } } }
   ```
 - `GET /health/live` only says the process answers. The Docker `HEALTHCHECK` uses it, so a database or worker outage does not mark the API container itself unhealthy.
-- Both are public. Failure messages are generic (SMTP connection details go to the log only).
+- Both are public, so they say only up or down and a generic reason: no queue sizes, and SMTP connection details go to the log only.
 
 ### 1.10 API surface
 

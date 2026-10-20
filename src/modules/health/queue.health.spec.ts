@@ -4,11 +4,10 @@ import { QueueHealthIndicator } from './queue.health.js';
 function setup({ connected = true, consumers = 1 } = {}) {
   const channel = {
     waitForConnect: vi.fn().mockResolvedValue(undefined),
-    checkQueue: vi.fn(async (queue: string) =>
-      queue === 'jobs'
-        ? { consumerCount: consumers, messageCount: 3 }
-        : { consumerCount: 0, messageCount: 1 },
-    ),
+    checkQueue: vi.fn().mockResolvedValue({
+      consumerCount: consumers,
+      messageCount: 3,
+    }),
   };
   const rabbit = {
     isConnected: () => connected,
@@ -18,10 +17,13 @@ function setup({ connected = true, consumers = 1 } = {}) {
 }
 
 describe('QueueHealthIndicator', () => {
-  it('reports the worker up with its queue counts', async () => {
-    await expect(setup().worker()).resolves.toMatchObject({
-      worker: { status: 'up', consumers: 1, pendingJobs: 3, deadJobs: 1 },
-    });
+  it('reports the worker up without exposing queue sizes', async () => {
+    const result = await setup().worker();
+    expect(result.worker.status).toBe('up');
+    expect(Object.keys(result.worker).sort()).toEqual([
+      'responseTime',
+      'status',
+    ]);
   });
 
   it('reports the worker down when nothing consumes the jobs queue', async () => {

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { HealthIndicatorService } from '@nestjs/terminus';
 import type { ChannelWrapper } from 'amqp-connection-manager';
-import { DEAD_QUEUE, JOBS_QUEUE } from '../jobs/jobs.constants.js';
+import { JOBS_QUEUE } from '../jobs/jobs.constants.js';
 import { RabbitMqConnection } from '../jobs/rabbitmq.connection.js';
 import { HEALTH_TIMEOUT_MS } from './health.constants.js';
 
@@ -23,7 +23,8 @@ export class QueueHealthIndicator {
   }
 
   // The worker is a separate process, so it is seen through the broker: it is up
-  // while at least one worker consumes the jobs queue.
+  // while at least one worker consumes the jobs queue. Queue sizes are left out of
+  // this public response; the RabbitMQ management UI has them.
   worker() {
     return this.health
       .check('worker')
@@ -36,18 +37,10 @@ export class QueueHealthIndicator {
         this.channel ??= this.rabbit.createChannel();
         // checkQueue throws instead of waiting while the channel is still opening.
         await this.channel.waitForConnect();
-        const [jobs, dead] = await Promise.all([
-          this.channel.checkQueue(JOBS_QUEUE),
-          this.channel.checkQueue(DEAD_QUEUE),
-        ]);
-        if (jobs.consumerCount === 0) {
+        const { consumerCount } = await this.channel.checkQueue(JOBS_QUEUE);
+        if (consumerCount === 0) {
           throw new Error('No worker is consuming the jobs queue');
         }
-        return {
-          consumers: jobs.consumerCount,
-          pendingJobs: jobs.messageCount,
-          deadJobs: dead.messageCount,
-        };
       })
       .withTimeout(HEALTH_TIMEOUT_MS);
   }
