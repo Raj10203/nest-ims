@@ -10,6 +10,8 @@ const booleanFlag = z
 // Migrations and the seed command import db-env.ts / seed-env.ts instead, so
 // they do not require (or expose) the JWT secrets.
 const appEnvSchema = dbEnvSchema.extend({
+  // The frontend's address; invitation links point to <APP_URL>/set-password.
+  APP_URL: z.url().transform((url) => url.replace(/\/+$/, '')),
   // Comma-separated browser origins allowed to call the API, e.g.
   // http://localhost:5173. Unset: no cross-origin access.
   CORS_ORIGINS: z

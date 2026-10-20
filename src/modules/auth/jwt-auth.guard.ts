@@ -12,6 +12,7 @@ import { env } from '../../config/env.js';
 import { User } from '../../entities/user.entity.js';
 import { UsersService } from '../users/users.service.js';
 import { ALLOW_UNVERIFIED_EMAIL } from './allow-unverified-email.decorator.js';
+import { MFA_TOKEN_TYPE } from './mfa.service.js';
 import { IS_PUBLIC } from './public.decorator.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
 
@@ -45,9 +46,12 @@ export class JwtAuthGuard implements CanActivate {
 
     let userId: number;
     try {
-      const payload = await this.jwt.verifyAsync<{ sub: number }>(token, {
-        secret: env.JWT_ACCESS_SECRET,
-      });
+      const payload = await this.jwt.verifyAsync<{ sub: number; typ?: string }>(
+        token,
+        { secret: env.JWT_ACCESS_SECRET },
+      );
+      // An MFA challenge is signed with the same secret but is not a login.
+      if (payload.typ === MFA_TOKEN_TYPE) throw new Error('MFA challenge');
       userId = payload.sub;
     } catch {
       throw new UnauthorizedException(

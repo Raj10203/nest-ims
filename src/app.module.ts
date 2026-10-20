@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD, APP_PIPE } from '@nestjs/core';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { minutes, ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppI18nModule } from './common/i18n/app-i18n.module.js';
@@ -12,6 +13,7 @@ import { dataSourceOptions } from './database/data-source.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { AuthorizationModule } from './modules/authorization/authorization.module.js';
 import { HealthModule } from './modules/health/health.module.js';
+import { InvitationsModule } from './modules/invitations/invitations.module.js';
 import { RolesModule } from './modules/roles/roles.module.js';
 import { SitesModule } from './modules/sites/sites.module.js';
 import { StorageModule } from './modules/storage/storage.module.js';
@@ -21,6 +23,7 @@ import { UsersModule } from './modules/users/users.module.js';
   imports: [
     AppLoggerModule,
     AppI18nModule,
+    EventEmitterModule.forRoot(),
     // Per client IP, in memory: each API instance counts on its own.
     ThrottlerModule.forRoot({
       throttlers: [{ ttl: minutes(1), limit: 100 }],
@@ -37,6 +40,7 @@ import { UsersModule } from './modules/users/users.module.js';
     RolesModule,
     SitesModule,
     AuthModule,
+    InvitationsModule,
     HealthModule,
   ],
   providers: [

@@ -9,6 +9,7 @@ import { AuthController } from './auth.controller.js';
 import { EmailVerificationService } from './email-verification.service.js';
 import { AuthService } from './auth.service.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
+import { MfaService } from './mfa.service.js';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { JwtAuthGuard } from './jwt-auth.guard.js';
   providers: [
     AuthService,
     EmailVerificationService,
+    MfaService,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],
 })

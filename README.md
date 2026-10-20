@@ -42,7 +42,8 @@ src/
   modules/
     auth/                    login, refresh, logout, me, email OTP
     authorization/           CASL ability factory + policies guard
-    users/  sites/  roles/   feature modules (controller, service, dto, specs)
+    users/  sites/  roles/   feature modules (controller, service, dto, specs); users emit the user.created event
+    invitations/             invitation emails (listens to user.created), set-password link, resend
     jobs/                    RabbitMQ publisher, consumer, retry topology
     mail/                    dynamic module MailModule.forRoot(options): nodemailer + the "send email OTP" job handler
     storage/                 Azure Blob Storage (StorageModule.forRoot via ConfigurableModuleBuilder)
@@ -57,9 +58,40 @@ Each feature keeps its module, controller, service, DTOs and tests together; ent
 - The refresh token is **rotated on every use** and stored only as a scrypt hash (`users.refreshTokenHash`). Logout clears it.
 - `JwtAuthGuard` is global: every route needs a bearer token unless marked `@Public()`. It loads the user on each request, so role changes apply immediately.
 - Passwords are hashed with Node's built-in scrypt; `password` and `refreshTokenHash` are `select: false`.
+- **Password rules** wherever a password is set: at least 8 characters with a capital letter, a small letter, a digit and a symbol, and not containing the user's first or last name (names under 3 letters are ignored). Each broken rule is its own translated validation message.
+
+### 1.3.1 Invitations (first password)
+
+```mermaid
+sequenceDiagram
+    actor Admin
+    participant API
+    participant Ev as user.created event
+    participant MQ as RabbitMQ / worker
+    actor User
+    Admin->>API: POST /api/users (no password)
+    API->>Ev: emit after save
+    Ev->>API: InvitationsModule listener: new token, store SHA-256 hash, 72 h expiry
+    API->>MQ: mail.send-invite
+    MQ->>User: "You have been added to IMS" + one-time link
+    User->>API: POST /api/invitations/accept { token, password }
+    API->>API: sets password, verifies email, clears token (one conditional UPDATE)
+```
+
+- Admins never set or see a user's first password. The user is created without one, and login answers "invalid email or password" until the invitation is accepted.
+- The link is `<APP_URL>/set-password?token=...`: a 256-bit random token, valid **72 hours, once**. Only its SHA-256 hash is stored, so the row can be looked up by it (a slow salted hash is only needed for guessable secrets). Accepting it also sets `emailVerifiedAt`, because opening the email proves the address.
+- `POST /api/users/:id/invitation` (anyone who may update the user) sends a new link and invalidates the old one; it returns 409 once the user has a password. Setting a password through `PATCH /api/users/:id` also cancels a pending link. Changing the email cancels the link sent to the old address in the same update and emits `user.email-changed`; if the user is still pending, the listener sends a new link to the corrected address.
+- `UsersModule` does not know about invitations: it only emits `user.created` and `user.email-changed`, and `InvitationsModule` (which imports `UsersModule`) listens. The listener runs asynchronously and logs instead of throwing, so a broker outage never fails user creation; the admin resends.
+
+### 1.3.2 Optional MFA (emailed sign-in code)
+
+- A user turns it on or off for themselves with `PUT /api/auth/me/mfa { enabled, password }`; the password is asked again so a stolen access token alone cannot disable it.
+- With MFA on, `POST /api/auth/login` answers `{ mfaRequired: true, challengeToken, expiresInMinutes }` instead of tokens and emails a 6-digit code (works once). Codes share one 10-minute window per user with 5 attempts in total: logging in again inside the window sends a new code but neither resets the attempts nor extends the window, so knowing the password does not buy fresh guesses. Once they are used up, login and code checks answer 429 "try again in N minutes". `POST /api/auth/login/mfa { challengeToken, otp }` returns the usual `{ user, accessToken, refreshToken }`.
+- The challenge token is a short-lived JWT of type `mfa`, signed with the access secret; `JwtAuthGuard` rejects that type, so it can never be used as an access token.
 
 ### 1.4 Email verification (OTP)
 
+- Invited users are verified by accepting the invitation; this OTP flow remains for accounts whose email is unverified for another reason (an email change, older accounts).
 - A user who has not verified their email can log in, but every other route returns 403 (except `me`, `logout` and the OTP routes).
 - `POST /api/auth/email-otp/send` generates a 6-digit OTP, stores **only its hash** with a 10-minute expiry and a 5-attempt limit, and publishes a mail job.
 - `POST /api/auth/email-otp/verify` checks it and sets `emailVerifiedAt`.
@@ -121,6 +153,7 @@ flowchart LR
 - **Logging:** pino-http. Every line has method, url, status, time, `userId` and `role`. Bodies are logged only in development (or opt-in in production); any field named like password/secret/token/otp/hash/authorization is masked at any depth.
 - **Database:** `synchronize` is off. Every schema change is a reviewed migration and must stay backward compatible, because the old version keeps serving while the new schema is applied.
 - **Response depth:** API responses include an entity's direct (to-one) relations and stop there: a user comes with its `role` and `createdBy`, a site with its `createdBy` and `incharge`, but not the relations of those. A related user is only a summary (`id`, first, middle and last name): email and account status stay behind the users read scope, which answers 404 outside it. `depthOne(repository)` builds these find options from the entity metadata, so new entities follow the rule automatically. The internal user lookup for authorization keeps the full eager chain, because the permissions are needed there.
+- **Events (`@nestjs/event-emitter`):** in-process events decouple modules without import cycles: `UsersService` emits `user.created`, and the invitations listener reacts. Events are for side effects only; a listener must not throw, and anything that must not be lost goes through RabbitMQ (as the invitation mail does).
 - **Caching:** the roles list is cached in memory for an hour.
 - **Graceful shutdown:** `enableShutdownHooks()` so `docker stop` is instant instead of waiting for SIGKILL.
 
@@ -150,7 +183,8 @@ All routes are under `/api`, except `GET /health`, `GET /health/live` and the do
 
 | Area | Routes |
 | --- | --- |
-| Auth | `POST /auth/login`, `/auth/refresh`, `/auth/logout`, `GET /auth/me`, `POST /auth/email-otp/send`, `/auth/email-otp/verify` |
+| Auth | `POST /auth/login`, `/auth/login/mfa`, `/auth/refresh`, `/auth/logout`, `GET /auth/me`, `PUT /auth/me/mfa`, `POST /auth/email-otp/send`, `/auth/email-otp/verify` |
+| Invitations | `POST /invitations/accept` (public), `POST /users/:id/invitation` (resend) |
 | Users | `POST/GET /users`, `GET/PATCH/DELETE /users/:id`, `PUT /users/:id/avatar` (multipart `file`, max 500 KB), `DELETE /users/:id/avatar` |
 | Sites | `POST/GET /sites`, `GET/PATCH/DELETE /sites/:id` (body accepts `inchargeId`) |
 | Roles | `GET /roles` |
@@ -262,6 +296,7 @@ The same image runs every role; only the command changes:
 - **Dedicated worker server:** the worker runs on its own machine, so slow or failing mail jobs never steal CPU or memory from the API. Because RabbitMQ delivers each message to exactly one consumer, more workers can be added without coordination.
 - **Database:** MySQL with `DB_SSL=true` (and optional `DB_SSL_CA`).
 - **File storage:** an Azure Storage account. Set `AZURE_STORAGE_CONNECTION_STRING` (from the portal's "Access keys") and `AZURE_STORAGE_CONTAINER`. Avatar URLs are opened directly by browsers, so the account must allow anonymous blob access and the container needs the **Blob** (anonymous read for blobs only) access level; create it beforehand (the API creates it on first upload if it can). Optional `AZURE_STORAGE_PUBLIC_URL` puts a CDN or custom domain into the stored URLs.
+- **Frontend address:** `APP_URL` (API) is the frontend's base URL; invitation emails link to `<APP_URL>/set-password?token=...`, so the frontend needs that page, which posts the token and the new password to `POST /api/invitations/accept`.
 - **Edge settings:** set `CORS_ORIGINS` to the frontend's origin(s), and `TRUST_PROXY` to the number of proxies in front of the API so rate limiting sees client IPs. Leave `SWAGGER_ENABLED` unset unless the docs should be public. `MAIL_HOST` / `MAIL_PORT` on the API are optional and only add the SMTP check to `/health`.
 - **Configuration:** environment variables only. No `.env`, `node_modules` or `dist` is ever copied into the image, and the container refuses to start if a variable is missing.
 
@@ -319,13 +354,15 @@ sequenceDiagram
 
 > Status: the hand-off from GitHub to Azure DevOps (last step in `ci-cd.yml`) and the Azure pipeline steps are currently commented out in the repository while the VM is being finalised. The deploy script itself lives on the VM, not in this repo. Rollback = re-run the Azure pipeline with an older commit SHA as `imageTag`.
 
+**Runner image:** every job runs on `ubuntu-24.04`, not `ubuntu-latest`, so GitHub moving the `latest` label to a new Ubuntu release never changes the OS under a build. GitHub still patches that image, and retires it a few years after release; move to the next version deliberately, in a PR of its own.
+
 **Required secrets**
 
 | Where | Secret |
 | --- | --- |
 | GitHub | `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `AZDO_ORG`, `AZDO_PROJECT`, `AZDO_PIPELINE_ID`, `AZDO_PAT` |
 | Azure DevOps | SSH service connection to the VM |
-| VM / worker server | all runtime env vars (`DB_*`, `JWT_*`, `RABBITMQ_URL`, `AZURE_STORAGE_*` on the API, `MAIL_*`, `SEED_SUPER_ADMIN_*`) |
+| VM / worker server | all runtime env vars (`DB_*`, `JWT_*`, `APP_URL` and `AZURE_STORAGE_*` on the API, `MAIL_*`, `SEED_SUPER_ADMIN_*`) |
 
 ### 3.5 First deploy checklist
 
@@ -356,4 +393,6 @@ sequenceDiagram
 | Avatars in Azure Blob Storage, URL on the user | The API never serves image bytes; browsers and CDNs load them directly. Blob names are unique, so they are cached for a year and replacing an avatar never shows a stale image |
 | Only a size limit on uploads, enforced while streaming | The client sends a ready image; Multer stops reading at 500 KB, so a large upload never fills memory |
 | `/health` reports, `/health/live` is the probe | Ops see exactly which dependency is down; a dependency outage does not get the API container restarted |
+| Invitation link instead of an emailed password | No password ever sits in a mailbox, a queue message or an admin's head; accepting the link also verifies the email |
+| `user.created` event for invitations | Users stay unaware of invitations and mail; a failed send never fails user creation |
 | `forwardRef` between Users and Sites | Each rule stays in the service that owns the data; new cycles should prefer a third module or a one-way call |
