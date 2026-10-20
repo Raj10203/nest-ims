@@ -17,10 +17,12 @@ export class AuditLog {
   @PrimaryGeneratedColumn({ type: 'bigint' })
   id: string;
 
-  @CreateDateColumn({ precision: 3 })
+  // Milliseconds keep rows from one request in order. The default must use the
+  // same precision, or MySQL rejects it.
+  @CreateDateColumn({ precision: 3, default: () => 'CURRENT_TIMESTAMP(3)' })
   createdAt: Date;
 
-  @Column({ length: 10 })
+  @Column({ type: 'varchar', length: 10 })
   action: AuditAction;
 
   @Column({ length: 50 })
@@ -36,7 +38,8 @@ export class AuditLog {
   @Column({ type: 'json', nullable: true })
   newValues: Record<string, any> | null;
 
-  // Null for changes made outside a signed-in request (seed, CLI).
+  // Null when no signed-in user made the change (e.g. a job outside a request).
+  // The seed command is not audited: CliModule does not load AuditModule.
   @Column({ type: 'int', nullable: true })
   actorId: number | null;
 

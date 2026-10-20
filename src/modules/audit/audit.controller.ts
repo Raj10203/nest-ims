@@ -1,5 +1,7 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+import { User } from '../../entities/user.entity.js';
+import { CurrentUser } from '../auth/current-user.decorator.js';
 import { CheckAbility } from '../authorization/check-ability.decorator.js';
 import { PoliciesGuard } from '../authorization/policies.guard.js';
 import {
@@ -19,8 +21,9 @@ export class AuditController {
   @Get()
   @CheckAbility('read', 'AuditLog')
   findAll(
+    @CurrentUser() actor: User,
     @Query({ schema: listAuditLogsQuerySchema }) query: ListAuditLogsQueryDto,
   ) {
-    return this.audit.findAll(query);
+    return this.audit.findAll(actor, query);
   }
 }
