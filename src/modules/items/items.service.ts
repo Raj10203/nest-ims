@@ -41,7 +41,7 @@ import {
 } from './item-code.js';
 import { assertItemRules, itemDefaults } from './item-rules.js';
 
-const INSERT_CHUNK = 1000;
+export const INSERT_CHUNK = 1000;
 
 @Injectable()
 export class ItemsService {

@@ -7,7 +7,8 @@ import { ItemMovement } from '../../entities/item-movement.entity.js';
 import { Item } from '../../entities/item.entity.js';
 import { Product } from '../../entities/product.entity.js';
 import { User } from '../../entities/user.entity.js';
-import { ItemsService } from './items.service.js';
+import { MAX_AUTO_NUMBER } from './item-code.js';
+import { INSERT_CHUNK, ItemsService } from './items.service.js';
 
 const actor = { id: 4 } as User;
 const hq = { id: 1, type: SiteType.HQ };
@@ -33,6 +34,26 @@ function setup(product: Partial<Product> = {}, takenCodes: string[] = []) {
     save: vi.fn((_entity, value) => Promise.resolve({ id: 30, ...value })),
     create: vi.fn((_entity, value) => value),
     insert: vi.fn().mockResolvedValue(undefined),
+    createQueryBuilder: vi.fn(() => queryBuilder),
+    find: vi.fn((_entity, { where }) =>
+      Promise.resolve(
+        where.code.value.map((code: string) => ({ id: ++lastId, code })),
+      ),
+    ),
+  };
+  let lastId = 100;
+  const queryBuilder = {
+    insert: vi.fn(() => queryBuilder),
+    into: vi.fn(() => queryBuilder),
+    values: vi.fn((_rows: Partial<Item>[]) => queryBuilder),
+    callListeners: vi.fn(() => queryBuilder),
+    updateEntity: vi.fn(() => queryBuilder),
+    execute: vi.fn().mockResolvedValue(undefined),
+  };
+  const audit = {
+    record: vi.fn((_entry: Record<string, unknown>, _manager?: unknown) =>
+      Promise.resolve(),
+    ),
   };
   const items = {
     findOne: vi.fn().mockResolvedValue({ id: 30 }),
@@ -43,9 +64,9 @@ function setup(product: Partial<Product> = {}, takenCodes: string[] = []) {
     items as any,
     {} as any,
     dataSource as any,
-    {} as any,
+    audit as any,
   );
-  return { service, manager };
+  return { service, manager, queryBuilder, audit };
 }
 
 const savedItem = (manager: ReturnType<typeof setup>['manager']) =>
@@ -103,5 +124,50 @@ describe('ItemsService.create', () => {
     await expect(service.create(actor, { productId: 7 })).rejects.toThrow(
       'errors.items.productInactive',
     );
+  });
+});
+
+describe('ItemsService.addStock', () => {
+  it('reserves one block of codes and inserts it in chunks with a movement per item', async () => {
+    const quantity = INSERT_CHUNK + 500;
+    const { service, manager, queryBuilder, audit } = setup();
+    const result = await service.addStock(actor, { productId: 7, quantity });
+
+    expect(counterUpdate(manager)).toEqual({ id: 7, lastItemNumber: 1510 });
+    const chunks = queryBuilder.values.mock.calls.map(([rows]) => rows);
+    expect(chunks.map((rows) => rows.length)).toEqual([INSERT_CHUNK, 500]);
+    expect(chunks[0][0]).toMatchObject({
+      code: 'DRL-000011',
+      siteId: 1,
+      status: ItemStatus.AVAILABLE,
+      condition: 100,
+    });
+    expect(chunks[1].at(-1)?.code).toBe('DRL-001510');
+    expect(queryBuilder.callListeners).toHaveBeenCalledWith(false);
+
+    const movements = manager.insert.mock.calls
+      .filter(([entity]) => entity === ItemMovement)
+      .flatMap(([, rows]) => rows);
+    expect(movements).toHaveLength(quantity);
+    expect(movements[0]).toMatchObject({ itemId: 101, action: 'added' });
+    expect(movements.at(-1)).toMatchObject({ itemId: 100 + quantity });
+
+    expect(audit.record).toHaveBeenCalledOnce();
+    expect(audit.record.mock.calls[0][0]).toMatchObject({
+      entityId: 'DRL-000011..DRL-001510',
+      newValues: { quantity },
+    });
+    expect(result.items).toHaveLength(quantity);
+  });
+
+  it('refuses a block that runs past the largest counter value', async () => {
+    const { service, manager, queryBuilder } = setup({
+      lastItemNumber: MAX_AUTO_NUMBER - 1,
+    });
+    await expect(
+      service.addStock(actor, { productId: 7, quantity: 2 }),
+    ).rejects.toThrow('errors.items.numbersExhausted');
+    expect(counterUpdate(manager)).toBeUndefined();
+    expect(queryBuilder.execute).not.toHaveBeenCalled();
   });
 });
