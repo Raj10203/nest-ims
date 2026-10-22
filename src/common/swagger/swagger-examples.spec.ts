@@ -7,6 +7,10 @@ import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum.js';
 import { Test } from '@nestjs/testing';
 import { z } from 'zod';
 import { AppModule } from '../../app.module.js';
+import { CategoriesController } from '../../modules/categories/categories.controller.js';
+import { createCategorySchema } from '../../modules/categories/dto/create-category.dto.js';
+import { createProductSchema } from '../../modules/products/dto/create-product.dto.js';
+import { ProductsController } from '../../modules/products/products.controller.js';
 import { SitesController } from '../../modules/sites/sites.controller.js';
 import { createSiteSchema } from '../../modules/sites/dto/create-site.dto.js';
 import { UsersController } from '../../modules/users/users.controller.js';
@@ -98,9 +102,14 @@ describe('Swagger examples', () => {
     },
   );
 
-  it('offers a fresh email, site code and the given role on each page load', async () => {
+  it('offers fresh unique values and the given role on each page load', async () => {
     const moduleRef = await Test.createTestingModule({
-      controllers: [UsersController, SitesController],
+      controllers: [
+        UsersController,
+        SitesController,
+        CategoriesController,
+        ProductsController,
+      ],
     })
       .useMocker(() => ({}))
       .compile();
@@ -124,6 +133,14 @@ describe('Swagger examples', () => {
     const site = bodyOf('/api/sites');
     expect(site.code).not.toBe('AMD-01');
     expect(createSiteSchema.safeParse(site).error).toBeUndefined();
+
+    const category = bodyOf('/api/categories');
+    expect(category.name).not.toBe('Power Tools');
+    expect(createCategorySchema.safeParse(category).error).toBeUndefined();
+
+    const product = bodyOf('/api/products');
+    expect(product.prefix).not.toBe('BLT10');
+    expect(createProductSchema.safeParse(product).error).toBeUndefined();
     await app.close();
   });
 });

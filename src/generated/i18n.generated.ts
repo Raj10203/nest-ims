@@ -37,6 +37,22 @@ export type I18nTranslations = {
             "codeTaken": string;
             "inchargeRoleRequired": string;
         };
+        "categories": {
+            "notFound": string;
+            "nameTaken": string;
+            "inUse": string;
+        };
+        "products": {
+            "notFound": string;
+            "prefixTaken": string;
+            "prefixFormat": string;
+            "categoryNotFound": string;
+            "bulkOnlyConsumable": string;
+            "packRequired": string;
+            "packNotAllowed": string;
+            "calibrationRequired": string;
+            "calibrationNotAllowed": string;
+        };
         "files": {
             "required": string;
             "tooLarge": string;
