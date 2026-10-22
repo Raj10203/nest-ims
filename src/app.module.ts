@@ -15,8 +15,10 @@ import { dataSourceOptions } from './database/data-source.js';
 import { AuditModule } from './modules/audit/audit.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { AuthorizationModule } from './modules/authorization/authorization.module.js';
+import { CategoriesModule } from './modules/categories/categories.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { InvitationsModule } from './modules/invitations/invitations.module.js';
+import { ProductsModule } from './modules/products/products.module.js';
 import { RolesModule } from './modules/roles/roles.module.js';
 import { SitesModule } from './modules/sites/sites.module.js';
 import { StorageModule } from './modules/storage/storage.module.js';
@@ -53,6 +55,8 @@ import { UsersModule } from './modules/users/users.module.js';
     UsersModule,
     RolesModule,
     SitesModule,
+    CategoriesModule,
+    ProductsModule,
     AuthModule,
     InvitationsModule,
     HealthModule,

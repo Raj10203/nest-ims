@@ -36,9 +36,9 @@ export function createSwaggerDocument(app: INestApplication): OpenAPIObject {
   return SwaggerModule.createDocument(app, config);
 }
 
-// Runs on every load of the docs page, so each visit offers an email and a site
-// code nobody has taken yet. The role is site_technician, which every role that
-// can create users may assign.
+// Runs on every load of the docs page, so each visit offers an email, site code,
+// category name and product prefix nobody has taken yet. The role is
+// site_technician, which every role that can create users may assign.
 export function withFreshExamples(
   document: OpenAPIObject,
   technicianRoleId?: number,
@@ -51,6 +51,13 @@ export function withFreshExamples(
   });
   setBodyExamples(patched, '/api/sites', {
     code: `SITE-${suffix.toUpperCase()}`,
+  });
+  setBodyExamples(patched, '/api/categories', {
+    name: `Power Tools ${suffix}`,
+  });
+  // Prefixes are at most 10 characters; the suffix is 8 until the year 2059.
+  setBodyExamples(patched, '/api/products', {
+    prefix: `P${suffix.toUpperCase()}`,
   });
   return patched;
 }

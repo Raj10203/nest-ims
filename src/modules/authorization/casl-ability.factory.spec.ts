@@ -79,4 +79,17 @@ describe('CaslAbilityFactory', () => {
     expect(ability.can('create', 'User')).toBe(false);
     expect(ability.can('update', subject('User', tech))).toBe(false);
   });
+
+  it('gives site roles read-only access to the catalog', () => {
+    for (const role of [RoleName.SITE_INCHARGE, RoleName.SITE_TECHNICIAN]) {
+      const ability = factory.createForUser(makeUser(7, role, 4));
+      for (const catalog of ['Category', 'Product']) {
+        expect(ability.can('read', catalog)).toBe(true);
+        expect(ability.can('create', catalog)).toBe(false);
+        expect(ability.can('delete', catalog)).toBe(false);
+      }
+    }
+    const manager = factory.createForUser(makeUser(2, RoleName.MANAGER, 1));
+    expect(manager.can('delete', 'Product')).toBe(true);
+  });
 });

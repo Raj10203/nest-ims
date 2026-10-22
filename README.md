@@ -43,6 +43,7 @@ src/
     auth/                    login, refresh, logout, me, email OTP
     authorization/           CASL ability factory + policies guard
     users/  sites/  roles/   feature modules (controller, service, dto, specs); users emit the user.created event
+    categories/  products/   product catalog (CRUD); product-rules.ts holds the type/measure-type rules
     invitations/             invitation emails (listens to user.created), set-password link, resend
     jobs/                    RabbitMQ publisher, consumer, retry topology
     mail/                    dynamic module MailModule.forRoot(options): nodemailer + the "send email OTP" job handler
@@ -107,8 +108,8 @@ Five roles in a strict hierarchy:
 | `super_admin` | 100 | `manage all`; only role that can create admins |
 | `admin` | 80 | manages all lower-level users |
 | `manager` | 60 | manages users it created |
-| `site_incharge` | 40 | manages users it created |
-| `site_technician` | 20 | read-only |
+| `site_incharge` | 40 | manages users it created; reads the catalog |
+| `site_technician` | 20 | read-only (itself and the catalog) |
 
 - A user can only manage users with a **strictly lower level**; everyone except `admin` can only manage accounts they created.
 - **Permissions are data, scoping is code.** `src/database/seeds/role-permissions.ts` is the single source of truth for `(action, subject)` pairs and is synced into the DB by the seed command. `CaslAbilityFactory` adds the hierarchy and ownership conditions.
@@ -120,6 +121,26 @@ Five roles in a strict hierarchy:
 - A site can have an **in-charge** (`inchargeId`, optional on create and update). The user must have the `site_incharge` role (400 otherwise) and be within the actor's user scope (404 otherwise).
 - A user who is still in charge of a site cannot be deleted (409); assign another in-charge first.
 - This makes `UsersModule` and `SitesModule` depend on each other. The cycle is resolved with `forwardRef` in both modules and both constructors; in ESM the injected parameter is typed `Pick<OtherService, 'method'>` so decorator metadata does not read the class before the import cycle has loaded it.
+
+### 1.6.1 Product catalog (categories and products)
+
+The catalog describes *what* can be stocked; stock units with their own ids, status, condition and location come in a later release.
+
+- **Categories** (`Fasteners`, `Power Tools`, `Safety`) only group products for filtering: `name` (unique, case-insensitive), `description`, `isActive`. A category that still has products cannot be deleted (409; the foreign key is `RESTRICT` as a backstop).
+- **Products** carry the behaviour, because one category can hold different kinds of item (a Safety category has issued safety suits and consumable belts):
+
+| Field | Values / rule |
+| --- | --- |
+| `prefix` | unique, 2–10 capital letters or digits (`BLT10`); stock unit ids will be built from it (`BLT10-000001`) |
+| `type` | `consumable` (used up), `non_consumable` (returnable, condition tracked), `personal_issue` (assigned to a person: safety shoes, laptops), `calibrated` (needs periodic calibration) |
+| `measureType` | `single` (one piece per id) or `bulk` (one pack per id, e.g. a box of bolts); only `consumable` may be `bulk`. An item handled both ways is two products |
+| `packSize`, `packUnit` | required for `bulk`, not allowed for `single`; `packUnit` is `pcs`, `kg`, `g`, `m`, `l` or `set` |
+| `calibrationIntervalDays` | required for `calibrated`, not allowed otherwise |
+
+- Types and units are TypeScript enums stored as `varchar`, so adding a value needs no `ALTER TABLE`. `GET /products/options` returns the allowed values for dropdowns.
+- The field combinations are checked in `ProductsService` (`product-rules.ts`) on the record as it will be saved, so PATCH follows them too: switching a product from `bulk` to `single` must also send `packSize: null, packUnit: null`. Errors use the same 400 body as request validation (`errors[].path`).
+- Like sites, the catalog is shared: admin and manager have full CRUD, site in-charge and technician read only.
+- `type`, `measureType` and `prefix` are editable for now; they will be locked once stock exists for the product.
 
 ### 1.7 Background jobs (RabbitMQ)
 
@@ -203,6 +224,8 @@ All routes are under `/api`, except `GET /health`, `GET /health/live` and the do
 | Invitations | `POST /invitations/accept` (public), `POST /users/:id/invitation` (resend) |
 | Users | `POST/GET /users`, `GET/PATCH/DELETE /users/:id`, `PUT /users/:id/avatar` (multipart `file`, max 500 KB), `DELETE /users/:id/avatar` |
 | Sites | `POST/GET /sites`, `GET/PATCH/DELETE /sites/:id` (body accepts `inchargeId`) |
+| Categories | `POST/GET /categories` (`?search=&isActive=`), `GET/PATCH/DELETE /categories/:id` |
+| Products | `POST/GET /products` (`?search=&categoryId=&type=&measureType=&isActive=`), `GET /products/options`, `GET/PATCH/DELETE /products/:id` |
 | Roles | `GET /roles` |
 | Audit | `GET /audit-logs` (super admin, admin) |
 | Health | `GET /health`, `GET /health/live` (no prefix) |
@@ -413,4 +436,6 @@ sequenceDiagram
 | `/health` reports, `/health/live` is the probe | Ops see exactly which dependency is down; a dependency outage does not get the API container restarted |
 | Invitation link instead of an emailed password | No password ever sits in a mailbox, a queue message or an admin's head; accepting the link also verifies the email |
 | `user.created` event for invitations | Users stay unaware of invitations and mail; a failed send never fails user creation |
+| Product type on the product, not the category | One category mixes kinds of item; categories stay plain grouping metadata |
+| One measure type per product | Stock ids are per piece or per pack, never per bolt; an item sold both ways is two products |
 | `forwardRef` between Users and Sites | Each rule stays in the service that owns the data; new cycles should prefer a third module or a one-way call |

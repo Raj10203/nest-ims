@@ -30,6 +30,22 @@
     "codeTaken": "A site with this code already exists",
     "inchargeRoleRequired": "User {id} does not have the {role} role"
   },
+  "categories": {
+    "notFound": "Category {id} not found",
+    "nameTaken": "A category with this name already exists",
+    "inUse": "This category still has products; move or delete them first"
+  },
+  "products": {
+    "notFound": "Product {id} not found",
+    "prefixTaken": "A product with this prefix already exists",
+    "prefixFormat": "The prefix must be 2 to 10 capital letters or digits",
+    "categoryNotFound": "Category {id} does not exist",
+    "bulkOnlyConsumable": "Only consumable products can be measured in bulk",
+    "packRequired": "Pack size and pack unit are required for a bulk product",
+    "packNotAllowed": "Pack size and pack unit are only for bulk products",
+    "calibrationRequired": "A calibration interval is required for a calibrated product",
+    "calibrationNotAllowed": "A calibration interval is only for calibrated products"
+  },
   "files": {
     "required": "A file is required",
     "tooLarge": "The file is too large; the maximum is {maxKb} KB",
