@@ -1,10 +1,16 @@
 const NOT_AUDITED = Symbol('notAudited');
+const NOT_AUDITED_ENTITY = Symbol('notAuditedEntity');
 
-// Leaves an entity column out of the audit log: technical state (OTP counters,
-// token hashes) that would only add noise. Audited columns whose name looks
-// like a secret (password, hash, token...) are masked, never stored.
-export function NotAudited(): PropertyDecorator {
-  return (target, property) => {
+// On a column: leaves it out of the audit log (technical state such as OTP
+// counters and token hashes, which would only add noise). On an entity class:
+// leaves the whole entity out (one that is a history table itself).
+// Audited columns whose name looks like a secret are masked, never stored.
+export function NotAudited(): ClassDecorator & PropertyDecorator {
+  return (target: object, property?: string | symbol) => {
+    if (property === undefined) {
+      Reflect.defineMetadata(NOT_AUDITED_ENTITY, true, target);
+      return;
+    }
     const inherited: (string | symbol)[] =
       Reflect.getMetadata(NOT_AUDITED, target.constructor) ?? [];
     Reflect.defineMetadata(
@@ -20,4 +26,11 @@ export function isNotAudited(entity: unknown, property: string): boolean {
   const excluded: (string | symbol)[] =
     Reflect.getMetadata(NOT_AUDITED, entity) ?? [];
   return excluded.includes(property);
+}
+
+export function isEntityNotAudited(entity: unknown): boolean {
+  return (
+    typeof entity === 'function' &&
+    Reflect.getMetadata(NOT_AUDITED_ENTITY, entity) === true
+  );
 }

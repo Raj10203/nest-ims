@@ -1,3 +1,4 @@
+import { FeatureRoleName } from '../../common/enums/feature-role-name.enum.js';
 import { RoleName } from '../../common/enums/role-name.enum.js';
 
 type PermissionDef = readonly [action: string, subject: string];
@@ -41,9 +42,33 @@ export const ROLE_PERMISSIONS: Record<RoleName, PermissionDef[]> = {
     ...USER_CRUD,
     ...SITE_CRUD,
     ...CATALOG_CRUD,
+    ['assign', 'FeatureRole'],
+    ['read', 'Item'],
     ['read', 'AuditLog'],
   ],
-  [RoleName.MANAGER]: [...USER_CRUD, ...SITE_CRUD, ...CATALOG_CRUD],
+  [RoleName.MANAGER]: [
+    ...USER_CRUD,
+    ...SITE_CRUD,
+    ...CATALOG_CRUD,
+    ['assign', 'FeatureRole'],
+    ['read', 'Item'],
+  ],
   [RoleName.SITE_INCHARGE]: [...USER_CRUD, ...CATALOG_READ],
   [RoleName.SITE_TECHNICIAN]: [['read', 'User'], ...CATALOG_READ],
+};
+
+// Added on top of the primary role's permissions, for whoever holds them,
+// whatever their primary role or site.
+export const FEATURE_ROLE_PERMISSIONS: Record<
+  FeatureRoleName,
+  PermissionDef[]
+> = {
+  [FeatureRoleName.STOCK_MANAGER]: [
+    ['create', 'Item'],
+    ['read', 'Item'],
+    ['update', 'Item'],
+    ['delete', 'Item'],
+    ['read', 'Product'],
+    ['read', 'Category'],
+  ],
 };

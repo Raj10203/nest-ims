@@ -37,12 +37,16 @@ export function readableUsersWhere(
 
 @Injectable()
 export class CaslAbilityFactory {
-  // The role's permissions come from the database (seeded); the hierarchy
+  // The roles' permissions come from the database (seeded); the hierarchy
   // conditions are applied here so rows stay simple (action + subject).
   createForUser(actor: User): AppAbility {
     const { can, build } = new AbilityBuilder<AppAbility>(createMongoAbility);
+    const roles = [
+      actor.role,
+      ...(actor.featureRoles ?? []).map((grant) => grant.role),
+    ];
 
-    for (const { action, subject } of actor.role.permissions) {
+    for (const { action, subject } of roles.flatMap((r) => r.permissions)) {
       if (subject !== 'User') {
         can(action, subject);
         continue;

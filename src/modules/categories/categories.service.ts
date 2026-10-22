@@ -6,7 +6,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { FindOptionsWhere, Like, Not, Repository } from 'typeorm';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
-import { depthOne } from '../../common/typeorm/depth-one.js';
+import { depthOne, findPageDepthOne } from '../../common/typeorm/depth-one.js';
 import { containsPattern } from '../../common/typeorm/like-pattern.js';
 import { Category } from '../../entities/category.entity.js';
 import { Product } from '../../entities/product.entity.js';
@@ -42,8 +42,7 @@ export class CategoriesService {
       ...(search && { name: Like(containsPattern(search)) }),
       ...(isActive !== undefined && { isActive }),
     };
-    const [items, total] = await this.categories.findAndCount({
-      ...depthOne(this.categories),
+    const [items, total] = await findPageDepthOne(this.categories, {
       where,
       order: { name: 'ASC' },
       skip: (page - 1) * limit,

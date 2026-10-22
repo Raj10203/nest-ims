@@ -2,6 +2,7 @@ import { subject } from '@casl/ability';
 import { ROLE_LEVELS, RoleName } from '../../common/enums/role-name.enum.js';
 import { Permission } from '../../entities/permission.entity.js';
 import { Role } from '../../entities/role.entity.js';
+import { UserFeatureRole } from '../../entities/user-feature-role.entity.js';
 import { User } from '../../entities/user.entity.js';
 import { ROLE_PERMISSIONS } from '../../database/seeds/role-permissions.js';
 import { CaslAbilityFactory } from './casl-ability.factory.js';
@@ -91,5 +92,26 @@ describe('CaslAbilityFactory', () => {
     }
     const manager = factory.createForUser(makeUser(2, RoleName.MANAGER, 1));
     expect(manager.can('delete', 'Product')).toBe(true);
+  });
+
+  it('adds the permissions of feature roles to the primary role', () => {
+    const technician = makeUser(7, RoleName.SITE_TECHNICIAN, 4);
+    expect(factory.createForUser(technician).can('create', 'Item')).toBe(false);
+
+    technician.featureRoles = [
+      Object.assign(new UserFeatureRole(), {
+        role: Object.assign(new Role(), {
+          permissions: [
+            Object.assign(new Permission(), {
+              action: 'create',
+              subject: 'Item',
+            }),
+          ],
+        }),
+      }),
+    ];
+    const ability = factory.createForUser(technician);
+    expect(ability.can('create', 'Item')).toBe(true);
+    expect(ability.can('create', 'User')).toBe(false);
   });
 });

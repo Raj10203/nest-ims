@@ -1,4 +1,5 @@
 import { ConflictException } from '@nestjs/common';
+import { RoleKind } from '../../common/enums/role-kind.enum.js';
 import { RoleName } from '../../common/enums/role-name.enum.js';
 import { User } from '../../entities/user.entity.js';
 import { CaslAbilityFactory } from '../authorization/casl-ability.factory.js';
@@ -27,7 +28,8 @@ const target = {
 function setup() {
   const users = {
     findOne: vi.fn().mockResolvedValue(target),
-    findAndCount: vi.fn(),
+    find: vi.fn(),
+    count: vi.fn(),
     metadata: {
       columns: [],
       relations: ['role', 'createdBy'].map((propertyName) => ({
@@ -50,6 +52,8 @@ function setup() {
   const events = { emit: vi.fn() };
   const service = new UsersService(
     users as any,
+    {} as any,
+    {} as any,
     {} as any,
     new CaslAbilityFactory(),
     sites as any,
@@ -102,15 +106,28 @@ describe('UsersService responses', () => {
 
   it('lists users with their direct relations only', async () => {
     const { service, users } = setup();
-    users.findAndCount.mockResolvedValue([[target], 1]);
-    await service.findAll(admin, { page: 1, limit: 20 });
-    expect(users.findAndCount).toHaveBeenCalledWith(depthOneQuery);
+    users.find.mockResolvedValue([target]);
+    users.count.mockResolvedValue(1);
+    const page = await service.findAll(admin, { page: 1, limit: 20 });
+    expect(users.find).toHaveBeenCalledWith(depthOneQuery);
+    // Counted without select: see findPageDepthOne.
+    expect(Object.keys(users.count.mock.calls[0][0])).toEqual(['where']);
+    expect(page.total).toBe(1);
   });
 
-  it('returns a single user the same way', async () => {
+  it('returns a single user with its feature roles too', async () => {
     const { service, users } = setup();
     await service.findOneFor(admin, 2);
-    expect(users.findOne).toHaveBeenCalledWith(depthOneQuery);
+    expect(users.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        relations: {
+          role: true,
+          createdBy: true,
+          featureRoles: { role: true },
+        },
+        loadEagerRelations: false,
+      }),
+    );
   });
 });
 
@@ -207,5 +224,73 @@ describe('UsersService.removeAvatar', () => {
     await service.removeAvatar(self, 2);
     expect(users.save).not.toHaveBeenCalled();
     expect(storage.deleteByUrl).not.toHaveBeenCalled();
+  });
+});
+
+describe('UsersService.setFeatureRoles', () => {
+  function setupGrants(current: { id: number; roleId: number }[]) {
+    const grants = {
+      find: vi.fn().mockResolvedValue(current),
+      remove: vi.fn().mockResolvedValue(undefined),
+      save: vi.fn().mockResolvedValue(undefined),
+      create: vi.fn((value) => value),
+    };
+    const users = {
+      findOne: vi.fn().mockResolvedValue(target),
+      metadata: { columns: [], relations: [] },
+    };
+    const roles = {
+      findAll: vi.fn().mockResolvedValue([{ id: 9 }, { id: 10 }]),
+    };
+    const dataSource = {
+      transaction: vi.fn((work) => work({ getRepository: () => grants })),
+    };
+    const service = new UsersService(
+      users as any,
+      {} as any,
+      dataSource as any,
+      roles as any,
+      new CaslAbilityFactory(),
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+    return { service, grants, roles };
+  }
+
+  it('adds missing grants and revokes the rest', async () => {
+    const { service, grants, roles } = setupGrants([
+      { id: 1, roleId: 9 },
+      { id: 2, roleId: 11 },
+    ]);
+    await service.setFeatureRoles(admin, 2, { roleIds: [9, 10] });
+    expect(roles.findAll).toHaveBeenCalledWith(RoleKind.FEATURE);
+    expect(grants.remove).toHaveBeenCalledWith([{ id: 2, roleId: 11 }]);
+    expect(grants.save).toHaveBeenCalledWith([
+      { userId: 2, roleId: 10, grantedById: 1 },
+    ]);
+  });
+
+  it('rejects a role that is not a feature role', async () => {
+    const { service, grants } = setupGrants([]);
+    await expect(
+      service.setFeatureRoles(admin, 2, { roleIds: [3] }),
+    ).rejects.toThrow('errors.users.featureRoleNotFound');
+    expect(grants.save).not.toHaveBeenCalled();
+  });
+
+  it('hides users outside the actor scope', async () => {
+    const { service } = setupGrants([]);
+    const manager = {
+      id: 8,
+      role: {
+        name: RoleName.MANAGER,
+        level: 60,
+        permissions: [{ action: 'update', subject: 'User' }],
+      },
+    } as unknown as User;
+    await expect(
+      service.setFeatureRoles(manager, 2, { roleIds: [9] }),
+    ).rejects.toThrow('errors.users.notFound');
   });
 });

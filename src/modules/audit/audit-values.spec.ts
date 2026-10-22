@@ -3,6 +3,7 @@ import { AuditLog } from '../../entities/audit-log.entity.js';
 import { Permission } from '../../entities/permission.entity.js';
 import { Role } from '../../entities/role.entity.js';
 import { Site } from '../../entities/site.entity.js';
+import { UserFeatureRole } from '../../entities/user-feature-role.entity.js';
 import { User } from '../../entities/user.entity.js';
 import { changes, snapshot } from './audit-values.js';
 
@@ -11,7 +12,7 @@ describe('audit values', () => {
   const dataSource = new DataSource({
     type: 'mysql',
     database: 'unused',
-    entities: [User, Role, Permission, Site, AuditLog],
+    entities: [User, UserFeatureRole, Role, Permission, Site, AuditLog],
   });
   beforeAll(() => (dataSource as any).buildMetadatas());
   const users = () => dataSource.getMetadata(User);

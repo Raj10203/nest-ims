@@ -26,6 +26,10 @@ import { CheckAbility } from '../authorization/check-ability.decorator.js';
 import { PoliciesGuard } from '../authorization/policies.guard.js';
 import { createUserSchema, type CreateUserDto } from './dto/create-user.dto.js';
 import {
+  setFeatureRolesSchema,
+  type SetFeatureRolesDto,
+} from './dto/set-feature-roles.dto.js';
+import {
   listUsersQuerySchema,
   type ListUsersQueryDto,
 } from './dto/list-users-query.dto.js';
@@ -122,6 +126,19 @@ export class UsersController {
     @Param('id', { schema: idParamSchema }) id: number,
   ) {
     return this.usersService.removeAvatar(actor, id);
+  }
+
+  @ApiOperation({
+    summary: 'Replace the feature roles of a user you may update',
+  })
+  @Put(':id/feature-roles')
+  @CheckAbility('assign', 'FeatureRole')
+  setFeatureRoles(
+    @CurrentUser() actor: User,
+    @Param('id', { schema: idParamSchema }) id: number,
+    @Body({ schema: setFeatureRolesSchema }) dto: SetFeatureRolesDto,
+  ) {
+    return this.usersService.setFeatureRoles(actor, id, dto);
   }
 
   @ApiOperation({ summary: 'Delete a user' })

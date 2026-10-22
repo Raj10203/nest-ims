@@ -10,15 +10,26 @@ import { MeasureType } from '../../common/enums/measure-type.enum.js';
 import { PackUnit } from '../../common/enums/pack-unit.enum.js';
 import { ProductType } from '../../common/enums/product-type.enum.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
-import { depthOne } from '../../common/typeorm/depth-one.js';
+import { depthOne, findPageDepthOne } from '../../common/typeorm/depth-one.js';
 import { containsPattern } from '../../common/typeorm/like-pattern.js';
 import { Category } from '../../entities/category.entity.js';
+import { Item } from '../../entities/item.entity.js';
 import { Product } from '../../entities/product.entity.js';
 import { User } from '../../entities/user.entity.js';
 import { CreateProductDto } from './dto/create-product.dto.js';
 import { ListProductsQueryDto } from './dto/list-products-query.dto.js';
 import { UpdateProductDto } from './dto/update-product.dto.js';
 import { assertProductRules } from './product-rules.js';
+
+// Printed on stickers or relied on by existing items: an item code keeps the
+// prefix it was given, and a box of 20 stays a box of 20.
+const LOCKED_ONCE_STOCKED = [
+  'prefix',
+  'type',
+  'measureType',
+  'packSize',
+  'packUnit',
+] as const;
 
 // The catalog is shared: anyone holding the permission can act on every record.
 @Injectable()
@@ -27,6 +38,7 @@ export class ProductsService {
     @InjectRepository(Product) private readonly products: Repository<Product>,
     @InjectRepository(Category)
     private readonly categories: Repository<Category>,
+    @InjectRepository(Item) private readonly items: Repository<Item>,
   ) {}
 
   async create(actor: User, dto: CreateProductDto): Promise<Product> {
@@ -66,8 +78,7 @@ export class ProductsService {
       ...(isActive !== undefined && { isActive }),
     };
     const pattern = search && Like(containsPattern(search));
-    const [items, total] = await this.products.findAndCount({
-      ...depthOne(this.products),
+    const [items, total] = await findPageDepthOne(this.products, {
       where: pattern
         ? [
             { ...filters, name: pattern },
@@ -104,12 +115,35 @@ export class ProductsService {
     if (dto.categoryId && dto.categoryId !== product.categoryId) {
       await this.assertCategoryExists(dto.categoryId);
     }
-    await this.products.save({ id, ...dto });
+    const changesIdentity = LOCKED_ONCE_STOCKED.some(
+      (field) => dto[field] !== undefined && dto[field] !== product[field],
+    );
+    await this.products.manager.transaction(async (manager) => {
+      if (changesIdentity) {
+        // The row lock ItemsService takes before adding stock, so a first add
+        // cannot land between this check and the save.
+        await manager.findOne(Product, {
+          where: { id },
+          lock: { mode: 'pessimistic_write' },
+          loadEagerRelations: false,
+        });
+        if (await manager.existsBy(Item, { productId: id })) {
+          throw new ConflictException(
+            i18nMessage('errors.products.lockedByItems'),
+          );
+        }
+      }
+      await manager.save(Product, { id, ...dto });
+    });
     return this.findOneOrFail(id);
   }
 
   async remove(id: number): Promise<void> {
-    await this.products.remove(await this.findOneOrFail(id));
+    const product = await this.findOneOrFail(id);
+    if (await this.items.existsBy({ productId: id })) {
+      throw new ConflictException(i18nMessage('errors.products.hasItems'));
+    }
+    await this.products.remove(product);
   }
 
   options() {

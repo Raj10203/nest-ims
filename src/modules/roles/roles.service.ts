@@ -4,6 +4,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import type { Cache } from 'cache-manager';
 import { Repository } from 'typeorm';
+import { FeatureRoleName } from '../../common/enums/feature-role-name.enum.js';
+import { RoleKind } from '../../common/enums/role-kind.enum.js';
 import { RoleName } from '../../common/enums/role-name.enum.js';
 import { Role } from '../../entities/role.entity.js';
 import { User } from '../../entities/user.entity.js';
@@ -11,7 +13,8 @@ import { CaslAbilityFactory } from '../authorization/casl-ability.factory.js';
 
 export interface RoleOption {
   id: number;
-  name: RoleName;
+  name: RoleName | FeatureRoleName;
+  kind: RoleKind;
   level: number;
 }
 
@@ -27,19 +30,11 @@ export class RolesService {
     private readonly abilityFactory: CaslAbilityFactory,
   ) {}
 
-  async findAll(): Promise<RoleOption[]> {
-    const cached = await this.cache.get<RoleOption[]>(CACHE_KEY);
-    if (cached) return cached;
-
-    const roles = await this.roles.find({
-      order: { level: 'DESC' },
-      loadEagerRelations: false,
-    });
-    const options = roles.map(({ id, name, level }) => ({ id, name, level }));
-    await this.cache.set(CACHE_KEY, options, CACHE_TTL_MS);
-    return options;
+  async findAll(kind = RoleKind.PRIMARY): Promise<RoleOption[]> {
+    return (await this.findEveryRole()).filter((role) => role.kind === kind);
   }
 
+  // Primary roles only: a feature role can never be a user's main role.
   async findById(id: number): Promise<RoleOption | null> {
     return (await this.findAll()).find((role) => role.id === id) ?? null;
   }
@@ -58,5 +53,23 @@ export class RolesService {
         }),
       ),
     );
+  }
+
+  private async findEveryRole(): Promise<RoleOption[]> {
+    const cached = await this.cache.get<RoleOption[]>(CACHE_KEY);
+    if (cached) return cached;
+
+    const roles = await this.roles.find({
+      order: { level: 'DESC', name: 'ASC' },
+      loadEagerRelations: false,
+    });
+    const options = roles.map(({ id, name, kind, level }) => ({
+      id,
+      name,
+      kind,
+      level,
+    }));
+    await this.cache.set(CACHE_KEY, options, CACHE_TTL_MS);
+    return options;
   }
 }

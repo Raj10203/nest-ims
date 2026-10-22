@@ -1,7 +1,16 @@
-import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
+import {
+  Column,
+  Entity,
+  Index,
+  JoinColumn,
+  ManyToOne,
+  OneToMany,
+} from 'typeorm';
 import { NotAudited } from '../common/audit/not-audited.decorator.js';
 import { BaseEntity } from './base.entity.js';
 import { Role } from './role.entity.js';
+import { Site } from './site.entity.js';
+import { UserFeatureRole } from './user-feature-role.entity.js';
 
 @Entity('users')
 export class User extends BaseEntity {
@@ -75,6 +84,20 @@ export class User extends BaseEntity {
 
   @Column()
   roleId: number;
+
+  // Eager (with the role's permissions) so CaslAbilityFactory sees them on
+  // the user JwtAuthGuard loads.
+  @OneToMany(() => UserFeatureRole, (grant) => grant.user, { eager: true })
+  featureRoles: UserFeatureRole[];
+
+  // Required by the API; nullable in the database until every running version
+  // sets it (a deploy keeps the old version serving during the migration).
+  @ManyToOne(() => Site, { nullable: true, onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'siteId' })
+  site: Site | null;
+
+  @Column({ type: 'int', nullable: true })
+  siteId: number | null;
 
   // The user who created this account (null for the seeded super admin).
   @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
