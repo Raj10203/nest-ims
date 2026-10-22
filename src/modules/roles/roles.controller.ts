@@ -1,5 +1,6 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+import { RoleKind } from '../../common/enums/role-kind.enum.js';
 import { User } from '../../entities/user.entity.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
 import { CheckAbility } from '../authorization/check-ability.decorator.js';
@@ -18,5 +19,12 @@ export class RolesController {
   @CheckAbility('create', 'User')
   findAssignable(@CurrentUser() actor: User): Promise<RoleOption[]> {
     return this.rolesService.findAssignable(actor);
+  }
+
+  @ApiOperation({ summary: 'Feature roles that can be given to any user' })
+  @Get('features')
+  @CheckAbility('assign', 'FeatureRole')
+  findFeatureRoles(): Promise<RoleOption[]> {
+    return this.rolesService.findAll(RoleKind.FEATURE);
   }
 }

@@ -20,6 +20,8 @@ export const createUserSchema = z.object({
     .toLowerCase()
     .meta({ example: 'jane.doe@example.com' }),
   roleId: z.number().int().positive().meta({ example: 5 }),
+  // 1 is the headquarters (seeded).
+  siteId: z.number().int().positive().meta({ example: 1 }),
 });
 
 export type CreateUserDto = z.output<typeof createUserSchema>;

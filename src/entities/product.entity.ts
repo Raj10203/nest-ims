@@ -42,6 +42,11 @@ export class Product extends BaseEntity {
   @Column({ type: 'varchar', length: 500, nullable: true })
   description: string | null;
 
+  // Last number used for an automatic item code; ItemsService raises it under
+  // a row lock, so codes are never handed out twice or reused.
+  @Column({ type: 'int', unsigned: true, default: 0 })
+  lastItemNumber: number;
+
   @Column({ default: true })
   isActive: boolean;
 

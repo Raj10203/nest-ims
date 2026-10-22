@@ -7,6 +7,7 @@ import {
   RemoveEvent,
   UpdateEvent,
 } from 'typeorm';
+import { isEntityNotAudited } from '../../common/audit/not-audited.decorator.js';
 import { AuditLog } from '../../entities/audit-log.entity.js';
 import { changes, snapshot } from './audit-values.js';
 import { AuditService } from './audit.service.js';
@@ -83,7 +84,7 @@ export class AuditSubscriber implements EntitySubscriberInterface {
   }
 
   private skip(target: unknown): boolean {
-    return target === AuditLog;
+    return target === AuditLog || isEntityNotAudited(target);
   }
 
   private idOf(

@@ -1,3 +1,5 @@
+import { FeatureRoleName } from '../../common/enums/feature-role-name.enum.js';
+import { RoleKind } from '../../common/enums/role-kind.enum.js';
 import { RoleName } from '../../common/enums/role-name.enum.js';
 import { User } from '../../entities/user.entity.js';
 import { CaslAbilityFactory } from '../authorization/casl-ability.factory.js';
@@ -13,9 +15,10 @@ function setup() {
     }),
   };
   const find = vi.fn().mockResolvedValue([
-    { id: 3, name: RoleName.ADMIN, level: 80, permissions: [] },
-    { id: 2, name: RoleName.MANAGER, level: 60, permissions: [] },
-    { id: 1, name: RoleName.SITE_TECHNICIAN, level: 20, permissions: [] },
+    { id: 3, name: RoleName.ADMIN, kind: 'primary', level: 80 },
+    { id: 2, name: RoleName.MANAGER, kind: 'primary', level: 60 },
+    { id: 1, name: RoleName.SITE_TECHNICIAN, kind: 'primary', level: 20 },
+    { id: 9, name: FeatureRoleName.STOCK_MANAGER, kind: 'feature', level: 0 },
   ]);
   const service = new RolesService(
     { find } as any,
@@ -34,19 +37,30 @@ describe('RolesService cache', () => {
     expect(find).toHaveBeenCalledTimes(1);
   });
 
-  it('caches only id, name and level', async () => {
+  it('caches only id, name, kind and level', async () => {
     const { service } = setup();
     expect((await service.findAll())[0]).toEqual({
       id: 3,
       name: RoleName.ADMIN,
+      kind: RoleKind.PRIMARY,
       level: 80,
     });
   });
 
-  it('finds a role by id, or null', async () => {
+  it('finds a primary role by id, or null', async () => {
     const { service } = setup();
     expect((await service.findById(1))?.name).toBe(RoleName.SITE_TECHNICIAN);
     expect(await service.findById(99)).toBeNull();
+    // A feature role can never be a user's main role.
+    expect(await service.findById(9)).toBeNull();
+  });
+
+  it('lists primary and feature roles separately', async () => {
+    const { service } = setup();
+    expect((await service.findAll()).map((r) => r.id)).toEqual([3, 2, 1]);
+    expect((await service.findAll(RoleKind.FEATURE)).map((r) => r.id)).toEqual([
+      9,
+    ]);
   });
 });
 

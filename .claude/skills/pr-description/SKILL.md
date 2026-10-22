@@ -17,33 +17,41 @@ Write for a reviewer or product owner, not a developer. The diff already shows t
 
 ```markdown
 ## Summary
+
 One or two sentences: what this PR delivers and why.
 
 ## What changes for users and the business
+
 - Behaviour changes in plain words (who can do what, what they now see, what is now blocked).
 - One bullet per feature or rule change.
 
 ## Database changes
+
 - Each table or column added, renamed or removed, and what it is for.
 - Say whether the change is safe while the old version is still running (backward compatible) and what rollback does.
 - "None" if there are no migrations.
 
 ## Breaking changes
+
 - API or behaviour changes that existing clients, scripts or users must adapt to. "None" if there are none.
 
 ## Release notes
+
 Short, user-facing bullets, as they would appear in a changelog.
 
 ## Before release (deploy checklist)
+
 Ordered steps someone must do for this to work, for example:
+
 - [ ] New or changed environment variables, with the value to set.
 - [ ] New services to provision (broker, mail provider, worker process).
 - [ ] Commands to run, in order (build, migrations, seed).
 - [ ] Data fixes or manual steps for existing records (for example existing users must verify their email).
 - [ ] Anything to restart.
-"Nothing extra" if the PR merges and works on its own.
+      "Nothing extra" if the PR merges and works on its own.
 
 ## How to verify
+
 2 to 4 steps a reviewer can follow to see it working.
 ```
 

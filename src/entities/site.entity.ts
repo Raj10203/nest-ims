@@ -1,4 +1,5 @@
 import { Column, Entity, JoinColumn, ManyToOne } from 'typeorm';
+import { SiteType } from '../common/enums/site-type.enum.js';
 import { BaseEntity } from './base.entity.js';
 import { User } from './user.entity.js';
 
@@ -18,6 +19,12 @@ export class Site extends BaseEntity {
 
   @Column({ type: 'varchar', length: 100, nullable: true })
   state: string | null;
+
+  @Column({ type: 'varchar', length: 10, nullable: true })
+  pincode: string | null;
+
+  @Column({ type: 'varchar', length: 10, default: SiteType.SITE })
+  type: SiteType;
 
   @Column({ default: true })
   isActive: boolean;

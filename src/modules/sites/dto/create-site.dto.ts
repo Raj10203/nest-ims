@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ErrorKey } from '../../../common/i18n/i18n-message.js';
 
 // Every field has an example (or a default), so the body Swagger builds from
 // them passes this schema; swagger-examples.spec.ts checks it.
@@ -37,6 +38,12 @@ export const createSiteSchema = z.object({
     .max(100)
     .nullish()
     .meta({ example: 'Gujarat' }),
+  pincode: z
+    .string()
+    .trim()
+    .regex(/^[0-9]{6}$/, 'errors.sites.pincodeFormat' satisfies ErrorKey)
+    .nullish()
+    .meta({ example: '380001' }),
   isActive: z.boolean().default(true),
   inchargeId: z.number().int().positive().nullish().meta({ example: null }),
 });

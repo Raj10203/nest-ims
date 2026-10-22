@@ -26,8 +26,13 @@ function setup(stored: object = {}) {
     metadata: { columns: [], relations: [] },
   };
   const categories = { existsBy: vi.fn().mockResolvedValue(true) };
-  const service = new ProductsService(products as any, categories as any);
-  return { service, products, categories };
+  const items = { existsBy: vi.fn().mockResolvedValue(false) };
+  const service = new ProductsService(
+    products as any,
+    categories as any,
+    items as any,
+  );
+  return { service, products, categories, items };
 }
 
 describe('ProductsService', () => {
