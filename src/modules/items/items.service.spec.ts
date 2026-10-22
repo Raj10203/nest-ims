@@ -66,7 +66,7 @@ function setup(product: Partial<Product> = {}, takenCodes: string[] = []) {
     dataSource as any,
     audit as any,
   );
-  return { service, manager, queryBuilder, audit };
+  return { service, manager, items, queryBuilder, audit };
 }
 
 const savedItem = (manager: ReturnType<typeof setup>['manager']) =>
@@ -169,5 +169,28 @@ describe('ItemsService.addStock', () => {
     ).rejects.toThrow('errors.items.numbersExhausted');
     expect(counterUpdate(manager)).toBeUndefined();
     expect(queryBuilder.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('ItemsService.update', () => {
+  it('checks a new serial number under the product lock', async () => {
+    const { service, manager, items } = setup({ isActive: false });
+    items.findOne.mockResolvedValue({
+      id: 30,
+      productId: 7,
+      serialNumber: null,
+      condition: 100,
+      product: { type: ProductType.NON_CONSUMABLE },
+    });
+    await service.update(actor, 30, { serialNumber: 'SN-1' });
+
+    const lockCall = manager.findOne.mock.invocationCallOrder[0];
+    const serialCheck = manager.existsBy.mock.invocationCallOrder[0];
+    expect(manager.findOne).toHaveBeenCalledWith(
+      Product,
+      expect.objectContaining({ lock: { mode: 'pessimistic_write' } }),
+    );
+    expect(lockCall).toBeLessThan(serialCheck);
+    expect(savedItem(manager)).toEqual({ id: 30, serialNumber: 'SN-1' });
   });
 });

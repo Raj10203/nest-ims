@@ -267,6 +267,9 @@ export class ItemsService {
     assertItemRules(item.product.type, dto);
     await this.dataSource.transaction(async (manager) => {
       if (dto.serialNumber && dto.serialNumber !== item.serialNumber) {
+        // Under the product lock, as in create, so two writers of one serial
+        // get a 409 instead of a duplicate-key 500.
+        await this.findProductForUpdate(manager, item.productId);
         await this.assertSerialFree(manager, item.productId, dto.serialNumber);
       }
       // save(), not update(): AuditSubscriber records the change.
@@ -306,11 +309,7 @@ export class ItemsService {
     manager: EntityManager,
     id: number,
   ): Promise<Product> {
-    const product = await manager.findOne(Product, {
-      where: { id },
-      lock: { mode: 'pessimistic_write' },
-      loadEagerRelations: false,
-    });
+    const product = await this.findProductForUpdate(manager, id);
     if (!product) {
       throw new BadRequestException(
         i18nMessage('errors.items.productNotFound', { id }),
@@ -322,6 +321,17 @@ export class ItemsService {
       );
     }
     return product;
+  }
+
+  private findProductForUpdate(
+    manager: EntityManager,
+    id: number,
+  ): Promise<Product | null> {
+    return manager.findOne(Product, {
+      where: { id },
+      lock: { mode: 'pessimistic_write' },
+      loadEagerRelations: false,
+    });
   }
 
   private async headquarters(manager: EntityManager): Promise<Site> {

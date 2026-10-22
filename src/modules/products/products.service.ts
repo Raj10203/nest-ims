@@ -118,10 +118,23 @@ export class ProductsService {
     const changesIdentity = LOCKED_ONCE_STOCKED.some(
       (field) => dto[field] !== undefined && dto[field] !== product[field],
     );
-    if (changesIdentity && (await this.items.existsBy({ productId: id }))) {
-      throw new ConflictException(i18nMessage('errors.products.lockedByItems'));
-    }
-    await this.products.save({ id, ...dto });
+    await this.products.manager.transaction(async (manager) => {
+      if (changesIdentity) {
+        // The row lock ItemsService takes before adding stock, so a first add
+        // cannot land between this check and the save.
+        await manager.findOne(Product, {
+          where: { id },
+          lock: { mode: 'pessimistic_write' },
+          loadEagerRelations: false,
+        });
+        if (await manager.existsBy(Item, { productId: id })) {
+          throw new ConflictException(
+            i18nMessage('errors.products.lockedByItems'),
+          );
+        }
+      }
+      await manager.save(Product, { id, ...dto });
+    });
     return this.findOneOrFail(id);
   }
 

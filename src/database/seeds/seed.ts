@@ -15,6 +15,7 @@ import {
 } from './role-permissions.js';
 
 const HQ_SITE_ID = 1;
+const HQ_SITE_CODE = 'HQ';
 
 // Idempotent: safe to run after every migration.
 export async function seed(dataSource: DataSource): Promise<void> {
@@ -72,20 +73,22 @@ export async function seed(dataSource: DataSource): Promise<void> {
       await roleRepo.save(role);
     }
 
-    // Headquarters always has id 1. A different site already holding id 1 is
-    // a setup error, not something to repair by guessing.
+    // Headquarters always has id 1 and code HQ. A different site already
+    // holding either is a setup error, not something to repair by guessing.
     let hq = await siteRepo.findOneBy({ type: SiteType.HQ });
     if (!hq) {
-      if (await siteRepo.existsBy({ id: HQ_SITE_ID })) {
+      if (
+        await siteRepo.existsBy([{ id: HQ_SITE_ID }, { code: HQ_SITE_CODE }])
+      ) {
         throw new Error(
-          `Site ${HQ_SITE_ID} exists but is not the headquarters; fix the sites table first`,
+          `A site with id ${HQ_SITE_ID} or code ${HQ_SITE_CODE} exists but is not the headquarters; fix the sites table first`,
         );
       }
       hq = await siteRepo.save(
         siteRepo.create({
           id: HQ_SITE_ID,
           name: 'Headquarters',
-          code: 'HQ',
+          code: HQ_SITE_CODE,
           address: null,
           city: 'Mahesana',
           state: 'Gujarat',
