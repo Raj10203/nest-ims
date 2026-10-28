@@ -210,6 +210,33 @@ describe('UsersService.changeRole', () => {
   });
 });
 
+describe('UsersService on your own account', () => {
+  const superAdmin = {
+    id: 1,
+    role: {
+      name: RoleName.SUPER_ADMIN,
+      level: 100,
+      permissions: [{ action: 'manage', subject: 'all' }],
+    },
+  } as unknown as User;
+
+  it('refuses to let a super admin deactivate themselves', async () => {
+    const { service, users } = setup();
+    await expect(service.deactivate(superAdmin, 1)).rejects.toThrow(
+      'errors.users.ownAccount',
+    );
+    expect(users.save).not.toHaveBeenCalled();
+  });
+
+  it('refuses to let a super admin change their own role', async () => {
+    const { service, users } = setup();
+    await expect(
+      service.changeRole(superAdmin, 1, { roleId: 3 }),
+    ).rejects.toThrow('errors.users.ownAccount');
+    expect(users.save).not.toHaveBeenCalled();
+  });
+});
+
 describe('UsersService.deactivate / reactivate', () => {
   it('deactivates, ends every session and voids pending links', async () => {
     const { service, users } = setup();
@@ -299,7 +326,9 @@ describe('UsersService.remove', () => {
 
   it('refuses to delete a user who has set a password', async () => {
     const { service, users } = setup();
-    users.findOne.mockResolvedValue({ ...targetRow, activatedAt: new Date() });
+    // Checked on the password, so a user activated before activatedAt existed
+    // (or by the previous version during a deploy) is protected too.
+    users.existsBy.mockResolvedValue(true);
     await expect(service.remove(admin, 2)).rejects.toThrow(
       'errors.users.deleteActivated',
     );

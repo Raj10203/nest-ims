@@ -16,6 +16,7 @@ function setup() {
     findById: vi.fn().mockResolvedValue({ id: 7, isActive: true }),
     findByEmailWithPassword: vi.fn(),
     setPassword: vi.fn().mockResolvedValue(undefined),
+    markActivated: vi.fn().mockResolvedValue(undefined),
   };
   const mfa = { startChallenge: vi.fn() };
   const service = new AuthService(users as any, new JwtService(), mfa as any);
@@ -76,6 +77,32 @@ describe('AuthService deactivated users', () => {
     await expect(service.refresh(refreshToken)).rejects.toThrow(
       'errors.auth.accountDeactivated',
     );
+  });
+});
+
+describe('AuthService.login', () => {
+  it('fills in activatedAt for a password set without it', async () => {
+    const service = setup();
+    service.mocks.users.findByEmailWithPassword.mockResolvedValue({
+      id: 7,
+      isActive: true,
+      activatedAt: null,
+      password: await hashSecret('Password123!'),
+    });
+    await service.login('jane@example.com', 'Password123!');
+    expect(service.mocks.users.markActivated).toHaveBeenCalledWith(7);
+  });
+
+  it('leaves an existing activatedAt alone', async () => {
+    const service = setup();
+    service.mocks.users.findByEmailWithPassword.mockResolvedValue({
+      id: 7,
+      isActive: true,
+      activatedAt: new Date(),
+      password: await hashSecret('Password123!'),
+    });
+    await service.login('jane@example.com', 'Password123!');
+    expect(service.mocks.users.markActivated).not.toHaveBeenCalled();
   });
 });
 

@@ -245,6 +245,7 @@ export class UsersService {
     id: number,
     { roleId }: ChangeRoleDto,
   ): Promise<User> {
+    this.assertNotSelf(actor, id);
     const target = await this.findOneToUpdate(actor, id);
     if (roleId === target.roleId) return target;
     const role = await this.findRoleOrFail(roleId);
@@ -274,6 +275,7 @@ export class UsersService {
   }
 
   async deactivate(actor: User, id: number): Promise<User> {
+    this.assertNotSelf(actor, id);
     const target = await this.findOneToUpdate(actor, id);
     if (!target.isActive) return target;
     if (await this.sitesService.isInchargeOfAnySite(id)) {
@@ -304,7 +306,8 @@ export class UsersService {
   async remove(actor: User, id: number): Promise<void> {
     const target = await this.findOneOrFail(id);
     this.assertCan(actor, 'delete', target);
-    if (target.activatedAt) {
+    // The password, not activatedAt: it is the record of truth (see markActivated).
+    if (await this.users.existsBy({ id, password: Not(IsNull()) })) {
       throw new ConflictException(i18nMessage('errors.users.deleteActivated'));
     }
     if (await this.sitesService.isInchargeOfAnySite(id)) {
@@ -387,6 +390,15 @@ export class UsersService {
     return (await this.findById(id))!;
   }
 
+  // Repairs activatedAt for a password set by a version that did not know the
+  // column yet (the old version keeps serving while the migration runs).
+  async markActivated(id: number): Promise<void> {
+    await this.users.update(
+      { id, activatedAt: IsNull() },
+      { activatedAt: new Date() },
+    );
+  }
+
   // Also voids a pending password reset link.
   async setPassword(id: number, passwordHash: string): Promise<void> {
     await this.users.save({
@@ -422,6 +434,14 @@ export class UsersService {
         i18nMessage('errors.users.roleNotFound', { id }),
       );
     return role;
+  }
+
+  // A super admin passes the update rule on themselves (manage all), and the
+  // last one would lock everyone out with no way back but the database.
+  private assertNotSelf(actor: User, id: number): void {
+    if (actor.id === id) {
+      throw new ForbiddenException(i18nMessage('errors.users.ownAccount'));
+    }
   }
 
   private async assertSiteExists(id: number): Promise<void> {

@@ -30,7 +30,8 @@
     "featureRoleNotFound": "Feature role {id} does not exist",
     "cannotAssignRole": "You are not allowed to give a user the role \"{role}\"",
     "deleteActivated": "This user has already set a password; deactivate the account instead",
-    "inactive": "This user is deactivated; reactivate the account first"
+    "inactive": "This user is deactivated; reactivate the account first",
+    "ownAccount": "You cannot deactivate your own account or change your own role"
   },
   "sites": {
     "notFound": "Site {id} not found",

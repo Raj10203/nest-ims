@@ -45,6 +45,7 @@ export class AuthService {
       );
     }
     assertActive(found);
+    if (!found.activatedAt) await this.users.markActivated(found.id);
     if (found.mfaEnabled) return this.mfa.startChallenge(found);
     return this.signIn(found.id);
   }

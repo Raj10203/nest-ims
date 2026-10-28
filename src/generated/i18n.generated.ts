@@ -38,6 +38,7 @@ export type I18nTranslations = {
             "cannotAssignRole": string;
             "deleteActivated": string;
             "inactive": string;
+            "ownAccount": string;
         };
         "sites": {
             "notFound": string;
