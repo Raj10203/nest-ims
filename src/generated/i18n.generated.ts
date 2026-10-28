@@ -31,11 +31,18 @@ export type I18nTranslations = {
             "cannotCreateWithRole": string;
             "emailTaken": string;
             "inchargeOfSite": string;
+            "siteNotFound": string;
+            "featureRoleNotFound": string;
         };
         "sites": {
             "notFound": string;
             "codeTaken": string;
             "inchargeRoleRequired": string;
+            "pincodeFormat": string;
+            "hqLocked": string;
+            "hqMissing": string;
+            "hasUsers": string;
+            "hasInventory": string;
         };
         "categories": {
             "notFound": string;
@@ -52,6 +59,20 @@ export type I18nTranslations = {
             "packNotAllowed": string;
             "calibrationRequired": string;
             "calibrationNotAllowed": string;
+            "lockedByItems": string;
+            "hasItems": string;
+        };
+        "items": {
+            "notFound": string;
+            "productNotFound": string;
+            "productInactive": string;
+            "codeTaken": string;
+            "suffixFormat": string;
+            "serialTaken": string;
+            "conditionNotAllowed": string;
+            "calibrationNotAllowed": string;
+            "numbersExhausted": string;
+            "notDeletable": string;
         };
         "files": {
             "required": string;
@@ -84,6 +105,7 @@ export type I18nTranslations = {
         "mfaCodeSent": string;
         "mfaEnabled": string;
         "mfaDisabled": string;
+        "passwordResetQueued": string;
     };
 };
 /* prettier-ignore */

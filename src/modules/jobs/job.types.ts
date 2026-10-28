@@ -17,6 +17,12 @@ export interface JobPayloads {
     otp: string;
     expiresInMinutes: number;
   };
+  'mail.send-password-reset': {
+    to: string;
+    firstName: string;
+    url: string;
+    expiresInMinutes: number;
+  };
 }
 
 export type JobType = keyof JobPayloads;

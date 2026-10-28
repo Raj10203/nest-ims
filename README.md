@@ -44,6 +44,7 @@ src/
     authorization/           CASL ability factory + policies guard
     users/  sites/  roles/   feature modules (controller, service, dto, specs); users emit the user.created event
     categories/  products/   product catalog (CRUD); product-rules.ts holds the type/measure-type rules
+    items/                   stock: one row per physical item, automatic codes, movements, stock counts
     invitations/             invitation emails (listens to user.created), set-password link, resend
     jobs/                    RabbitMQ publisher, consumer, retry topology
     mail/                    dynamic module MailModule.forRoot(options): nodemailer + the "send email OTP" job handler
@@ -85,7 +86,15 @@ sequenceDiagram
 - `POST /api/users/:id/invitation` (anyone who may update the user) sends a new link and invalidates the old one; it returns 409 once the user has a password. Setting a password through `PATCH /api/users/:id` also cancels a pending link. Changing the email cancels the link sent to the old address in the same update and emits `user.email-changed`; if the user is still pending, the listener sends a new link to the corrected address.
 - `UsersModule` does not know about invitations: it only emits `user.created` and `user.email-changed`, and `InvitationsModule` (which imports `UsersModule`) listens. The listener runs asynchronously and logs instead of throwing, so a broker outage never fails user creation; the admin resends.
 
-### 1.3.2 Optional MFA (emailed sign-in code)
+### 1.3.2 Forgot password
+
+- `POST /api/auth/forgot-password { email }` (public, 5 per minute per IP) always answers **202** with the same message. The work runs after the response, so neither the answer nor its timing tells whether an account uses that email; failures are logged.
+- A user with a password gets a "Reset your IMS password" email with a link to the **same** `<APP_URL>/set-password?token=...` page, valid **60 minutes, once**. A user still waiting on an invitation gets the invitation again instead (72 hours).
+- Both links share the invitation's token columns (`inviteTokenHash`, `inviteExpiresAt`), so only the latest link of either kind works, and both are accepted by `POST /api/invitations/accept`.
+- Accepting a link also **signs out every session** (clears `refreshTokenHash`), since a reset often follows a leaked password. It keeps an existing `emailVerifiedAt` and sets it otherwise.
+- There is no per-account cooldown beyond the IP rate limit, so many IPs could fill one inbox with reset emails; add one if that becomes a problem.
+
+### 1.3.3 Optional MFA (emailed sign-in code)
 
 - A user turns it on or off for themselves with `PUT /api/auth/me/mfa { enabled, password }`; the password is asked again so a stolen access token alone cannot disable it.
 - With MFA on, `POST /api/auth/login` answers `{ mfaRequired: true, challengeToken, expiresInMinutes }` instead of tokens and emails a 6-digit code (works once). Codes share one 10-minute window per user with 5 attempts in total: logging in again inside the window sends a new code but neither resets the attempts nor extends the window, so knowing the password does not buy fresh guesses. Once they are used up, login and code checks answer 429 "try again in N minutes". `POST /api/auth/login/mfa { challengeToken, otp }` returns the usual `{ user, accessToken, refreshToken }`.
@@ -103,44 +112,76 @@ sequenceDiagram
 
 Five roles in a strict hierarchy:
 
-| Role | Level | Notes |
-| --- | --- | --- |
-| `super_admin` | 100 | `manage all`; only role that can create admins |
-| `admin` | 80 | manages all lower-level users |
-| `manager` | 60 | manages users it created |
-| `site_incharge` | 40 | manages users it created; reads the catalog |
-| `site_technician` | 20 | read-only (itself and the catalog) |
+| Role              | Level | Notes                                          |
+| ----------------- | ----- | ---------------------------------------------- |
+| `super_admin`     | 100   | `manage all`; only role that can create admins |
+| `admin`           | 80    | manages all lower-level users                  |
+| `manager`         | 60    | manages users it created                       |
+| `site_incharge`   | 40    | manages users it created; reads the catalog    |
+| `site_technician` | 20    | read-only (itself and the catalog)             |
 
 - A user can only manage users with a **strictly lower level**; everyone except `admin` can only manage accounts they created.
 - **Permissions are data, scoping is code.** `src/database/seeds/role-permissions.ts` is the single source of truth for `(action, subject)` pairs and is synced into the DB by the seed command. `CaslAbilityFactory` adds the hierarchy and ownership conditions.
 - **Two layers:** `@CheckAbility()` + `PoliciesGuard` answer "may this role do this at all"; the service then checks the specific record. Out-of-scope records return **404, not 403**, so ids are not revealed.
 
+#### Feature roles
+
+A user has **one primary role** (the table above) and **any number of feature roles**, which only add permissions: a promoted site employee keeps the same account, moves to the HQ site and gets `stock_manager`.
+
+- Stored in the same `roles` table with `kind = 'feature'` (level 0, no part in the hierarchy); their permissions come from `FEATURE_ROLE_PERMISSIONS` in `role-permissions.ts` and are seeded like the others. Today: `stock_manager` (add, edit and delete items). `request_reviewer` and `shipment_manager` arrive with their features.
+- Grants are rows in `user_feature_roles` (with `grantedById`), so every grant and revoke is in the audit log.
+- `PUT /users/:id/feature-roles { roleIds }` replaces the set. It needs `assign FeatureRole` (super admin, admin, manager) **and** the usual rule for editing that user, so nobody can grant capabilities to themselves or to a higher role. `GET /roles/features` lists them; `GET /roles` stays primary-only.
+- `CaslAbilityFactory` merges the permissions of the primary role and every feature role. The auth guard reloads the user on every request, so a grant or revoke applies to the next request.
+
 ### 1.6 Sites and site in-charge
 
 - Sites are shared: any role with the `Site` permissions can act on every site.
+- **Headquarters** is a site with `type = 'hq'`. The seed command creates it (id 1, code `HQ`, Mahesana, Gujarat, 384002) when missing, and stops with an error if id 1 is already another site. Code finds it by type, never by id. It cannot be deleted.
+- **Every user belongs to one site** (`users.siteId`, required by the API; HQ staff have the HQ site). The column is nullable in the database for one release so the previous version keeps working during the deploy; the seed command moves users without a site to HQ.
+- A site with users, stock or stock history cannot be deleted (409).
 - A site can have an **in-charge** (`inchargeId`, optional on create and update). The user must have the `site_incharge` role (400 otherwise) and be within the actor's user scope (404 otherwise).
 - A user who is still in charge of a site cannot be deleted (409); assign another in-charge first.
 - This makes `UsersModule` and `SitesModule` depend on each other. The cycle is resolved with `forwardRef` in both modules and both constructors; in ESM the injected parameter is typed `Pick<OtherService, 'method'>` so decorator metadata does not read the class before the import cycle has loaded it.
 
 ### 1.6.1 Product catalog (categories and products)
 
-The catalog describes *what* can be stocked; stock units with their own ids, status, condition and location come in a later release.
+The catalog describes _what_ can be stocked; stock units with their own ids, status, condition and location come in a later release.
 
 - **Categories** (`Fasteners`, `Power Tools`, `Safety`) only group products for filtering: `name` (unique, case-insensitive), `description`, `isActive`. A category that still has products cannot be deleted (409; the foreign key is `RESTRICT` as a backstop).
 - **Products** carry the behaviour, because one category can hold different kinds of item (a Safety category has issued safety suits and consumable belts):
 
-| Field | Values / rule |
-| --- | --- |
-| `prefix` | unique, 2–10 capital letters or digits (`BLT10`); stock unit ids will be built from it (`BLT10-000001`) |
-| `type` | `consumable` (used up), `non_consumable` (returnable, condition tracked), `personal_issue` (assigned to a person: safety shoes, laptops), `calibrated` (needs periodic calibration) |
-| `measureType` | `single` (one piece per id) or `bulk` (one pack per id, e.g. a box of bolts); only `consumable` may be `bulk`. An item handled both ways is two products |
-| `packSize`, `packUnit` | required for `bulk`, not allowed for `single`; `packUnit` is `pcs`, `kg`, `g`, `m`, `l` or `set` |
-| `calibrationIntervalDays` | required for `calibrated`, not allowed otherwise |
+| Field                     | Values / rule                                                                                                                                                                       |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prefix`                  | unique, 2–10 capital letters or digits (`BLT10`); stock unit ids will be built from it (`BLT10-000001`)                                                                             |
+| `type`                    | `consumable` (used up), `non_consumable` (returnable, condition tracked), `personal_issue` (assigned to a person: safety shoes, laptops), `calibrated` (needs periodic calibration) |
+| `measureType`             | `single` (one piece per id) or `bulk` (one pack per id, e.g. a box of bolts); only `consumable` may be `bulk`. An item handled both ways is two products                            |
+| `packSize`, `packUnit`    | required for `bulk`, not allowed for `single`; `packUnit` is `pcs`, `kg`, `g`, `m`, `l` or `set`                                                                                    |
+| `calibrationIntervalDays` | required for `calibrated`, not allowed otherwise                                                                                                                                    |
 
 - Types and units are TypeScript enums stored as `varchar`, so adding a value needs no `ALTER TABLE`. `GET /products/options` returns the allowed values for dropdowns.
 - The field combinations are checked in `ProductsService` (`product-rules.ts`) on the record as it will be saved, so PATCH follows them too: switching a product from `bulk` to `single` must also send `packSize: null, packUnit: null`. Errors use the same 400 body as request validation (`errors[].path`).
 - Like sites, the catalog is shared: admin and manager have full CRUD, site in-charge and technician read only.
-- `type`, `measureType` and `prefix` are editable for now; they will be locked once stock exists for the product.
+- Once a product has items, `prefix`, `type`, `measureType`, `packSize` and `packUnit` are locked and the product cannot be deleted (409): codes are printed on stickers and a box of 20 stays a box of 20.
+
+### 1.6.2 Stock (items)
+
+The `items` table **is** the inventory: one row per physical unit (one drill, one jacket, one box of bolts). There is no quantity table; stock levels are counts over `items`, so there is a single source of truth.
+
+| Column                 | Meaning                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------- |
+| `code`                 | unique, `<prefix>-<suffix>`, printed on the sticker (`DRL-000014`, `DRL-OLD17`) |
+| `productId`, `siteId`  | what it is and where it is now (always HQ until shipments arrive)               |
+| `status`               | `available` for now; requests, shipments and issue flows add their statuses     |
+| `condition`            | 0–100, starts at 100; `null` for consumables                                    |
+| `serialNumber`         | optional manufacturer serial, unique per product                                |
+| `nextCalibrationDueAt` | calibrated products only; defaults to today + the product's interval            |
+
+- **Adding stock** (`stock_manager`): `POST /items/bulk { productId, quantity }` creates one item per unit at HQ with the next automatic codes (at most 10 000 per call, so a typo cannot hold the product's row lock for long); `POST /items` adds one item and may take a `codeSuffix` (capital letters and digits; the prefix is always the product's) and a serial number. Receipts and invoices come later.
+- **Automatic codes** come from `products.lastItemNumber`, raised inside a transaction that holds a row lock on that product (`SELECT … FOR UPDATE`). Concurrent adds of the same product queue for a few milliseconds and get separate number ranges; other products are not affected. A typed suffix that an automatic code could produce later (`000050`) moves the counter past it, so the two never collide. Numbers are never reused.
+- **History** is `item_movements`, append-only: one row per event (`added`, `condition_changed`; shipments and issues add more) with the site, status, condition before/after, note and who did it. It is the item's own audit trail, so the generic audit log skips it (`@NotAudited()` on the entity). A bulk add writes one audit entry for the whole range (`entityId` `DRL-000001..DRL-000500`) instead of one per item.
+- An item can be deleted only to correct a wrong entry: while it is `available` at HQ. Its movements go with it.
+- `GET /items/stock` returns counts per product, site and status (filters: product, category, site, status): the stock dashboard.
+- Admin and manager can read items; only `stock_manager` (or super admin) changes them.
 
 ### 1.7 Background jobs (RabbitMQ)
 
@@ -184,10 +225,18 @@ flowchart LR
 - `GET /health` checks every dependency and reports each one separately: `database` (MySQL ping), `rabbitmq` (broker connection), `worker` (at least one consumer on the `jobs` queue; queue sizes are left out of this public response, see the RabbitMQ UI), `storage` (the blob storage account answers) and `mail` (SMTP greeting; only when `MAIL_HOST` and `MAIL_PORT` are set for the API). Each check times out after 3 s. Up services are listed under `info`, down ones under `error` with a reason, and any down service makes the response a **503**:
 
   ```json
-  { "status": "error",
-    "info":  { "database": { "status": "up" }, "rabbitmq": { "status": "up" } },
-    "error": { "worker": { "status": "down", "message": "No worker is consuming the jobs queue" } } }
+  {
+    "status": "error",
+    "info": { "database": { "status": "up" }, "rabbitmq": { "status": "up" } },
+    "error": {
+      "worker": {
+        "status": "down",
+        "message": "No worker is consuming the jobs queue"
+      }
+    }
+  }
   ```
+
 - `GET /health/live` only says the process answers. The Docker `HEALTHCHECK` uses it, so a database or worker outage does not mark the API container itself unhealthy.
 - Both are public, so they say only up or down and a generic reason: no queue sizes, and SMTP connection details go to the log only.
 
@@ -199,7 +248,7 @@ flowchart LR
   1. **Size:** at most 500 KB (`AVATAR_MAX_BYTES`). Multer stops reading at the limit, so an oversized upload gets a 413 without being held in memory.
   2. **Type from the bytes:** PNG or JPEG only, detected from the file's magic numbers, not the client's `Content-Type`; the detected type is what the blob is stored and served with. Otherwise 415.
   3. **Content** (`ImageContentValidator`, `common/files/`, reusable for other image uploads): nothing may follow the image's end marker (the PNG chunks and JPEG segments are walked, so polyglot files with appended HTML, scripts or archives are refused), the dimensions may not exceed 4096 × 4096 (read from the header before decoding, against decompression bombs), and every pixel must decode in strict mode (truncated or corrupt data fails). Otherwise 422.
-  All messages are translated.
+     All messages are translated.
 - `StorageModule` is built with `ConfigurableModuleBuilder` (`forRoot` / `forRootAsync`) and is global, so any feature can inject `BlobStorageService`. Development uses the **Azurite** emulator from docker-compose; production gets a real storage account through the same `AZURE_STORAGE_*` variables, with no code change. `AZURE_STORAGE_PUBLIC_URL` replaces the endpoint in stored URLs, because inside Docker the emulator is `http://azurite:10000`, which the browser cannot reach.
 - The container is created on the first upload with anonymous read access for blobs, so stored URLs work without a token.
 
@@ -218,17 +267,18 @@ Every create, update and delete of an entity is recorded in `audit_logs`: who (`
 
 All routes are under `/api`, except `GET /health`, `GET /health/live` and the docs (`/docs`). Every route accepts `?lang=` / `Accept-Language`.
 
-| Area | Routes |
-| --- | --- |
-| Auth | `POST /auth/login`, `/auth/login/mfa`, `/auth/refresh`, `/auth/logout`, `GET /auth/me`, `PUT /auth/me/mfa`, `POST /auth/email-otp/send`, `/auth/email-otp/verify` |
-| Invitations | `POST /invitations/accept` (public), `POST /users/:id/invitation` (resend) |
-| Users | `POST/GET /users`, `GET/PATCH/DELETE /users/:id`, `PUT /users/:id/avatar` (multipart `file`, max 500 KB), `DELETE /users/:id/avatar` |
-| Sites | `POST/GET /sites`, `GET/PATCH/DELETE /sites/:id` (body accepts `inchargeId`) |
-| Categories | `POST/GET /categories` (`?search=&isActive=`), `GET/PATCH/DELETE /categories/:id` |
-| Products | `POST/GET /products` (`?search=&categoryId=&type=&measureType=&isActive=`), `GET /products/options`, `GET/PATCH/DELETE /products/:id` |
-| Roles | `GET /roles` |
-| Audit | `GET /audit-logs` (super admin, admin) |
-| Health | `GET /health`, `GET /health/live` (no prefix) |
+| Area        | Routes                                                                                                                                                                                              |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Auth        | `POST /auth/login`, `/auth/login/mfa`, `/auth/refresh`, `/auth/logout`, `/auth/forgot-password` (public), `GET /auth/me`, `PUT /auth/me/mfa`, `POST /auth/email-otp/send`, `/auth/email-otp/verify` |
+| Invitations | `POST /invitations/accept` (public; invitation and password reset links), `POST /users/:id/invitation` (resend)                                                                                     |
+| Users       | `POST/GET /users` (body needs `siteId`), `GET/PATCH/DELETE /users/:id`, `PUT /users/:id/feature-roles`, `PUT /users/:id/avatar` (multipart `file`, max 500 KB), `DELETE /users/:id/avatar`          |
+| Sites       | `POST/GET /sites`, `GET/PATCH/DELETE /sites/:id` (body accepts `inchargeId`)                                                                                                                        |
+| Categories  | `POST/GET /categories` (`?search=&isActive=`), `GET/PATCH/DELETE /categories/:id`                                                                                                                   |
+| Products    | `POST/GET /products` (`?search=&categoryId=&type=&measureType=&isActive=`), `GET /products/options`, `GET/PATCH/DELETE /products/:id`                                                               |
+| Items       | `POST /items/bulk`, `POST/GET /items` (`?search=&productId=&categoryId=&siteId=&status=`), `GET /items/stock`, `GET/PATCH/DELETE /items/:id`, `GET /items/:id/movements`                            |
+| Roles       | `GET /roles` (primary), `GET /roles/features`                                                                                                                                                       |
+| Audit       | `GET /audit-logs` (super admin, admin)                                                                                                                                                              |
+| Health      | `GET /health`, `GET /health/live` (no prefix)                                                                                                                                                       |
 
 ---
 
@@ -243,14 +293,14 @@ docker compose up
 
 That single command starts the whole stack:
 
-| Service | What it is | Host access |
-| --- | --- | --- |
-| `app` | NestJS API in watch mode (source is bind-mounted, installs dependencies itself) | http://localhost:3001 (`/api/...`, `/health`, Swagger UI at `/docs`) |
-| `worker` | Background job consumer in watch mode | none |
-| `mysql` | MySQL 8 | `localhost:3308` |
-| `rabbitmq` | Broker + management UI | UI http://localhost:15672 (`ims` / `ims`), AMQP `:5672` |
-| `mailpit` | Fake SMTP server that catches every email | inbox http://localhost:8025 |
-| `azurite` | Azure Blob Storage emulator (uploaded avatars) | blobs at http://localhost:10000/devstoreaccount1/avatars/... |
+| Service    | What it is                                                                      | Host access                                                          |
+| ---------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `app`      | NestJS API in watch mode (source is bind-mounted, installs dependencies itself) | http://localhost:3001 (`/api/...`, `/health`, Swagger UI at `/docs`) |
+| `worker`   | Background job consumer in watch mode                                           | none                                                                 |
+| `mysql`    | MySQL 8                                                                         | `localhost:3308`                                                     |
+| `rabbitmq` | Broker + management UI                                                          | UI http://localhost:15672 (`ims` / `ims`), AMQP `:5672`              |
+| `mailpit`  | Fake SMTP server that catches every email                                       | inbox http://localhost:8025                                          |
+| `azurite`  | Azure Blob Storage emulator (uploaded avatars)                                  | blobs at http://localhost:10000/devstoreaccount1/avatars/...         |
 
 Emails (including verification OTPs) never leave your machine: open the Mailpit inbox to read them.
 
@@ -322,12 +372,12 @@ flowchart TB
 
 The same image runs every role; only the command changes:
 
-| Role | Command |
-| --- | --- |
-| API | `node dist/main.js` (default) |
-| Worker | `node dist/worker.js` |
+| Role       | Command                                                                                                   |
+| ---------- | --------------------------------------------------------------------------------------------------------- |
+| API        | `node dist/main.js` (default)                                                                             |
+| Worker     | `node dist/worker.js`                                                                                     |
 | Migrations | `node node_modules/typeorm/cli.js migration:run -d dist/database/data-source.js` (or `npm run migration`) |
-| Seed | `node dist/cli/cli.js seed` |
+| Seed       | `node dist/cli/cli.js seed`                                                                               |
 
 ### 3.2 Production services
 
@@ -371,10 +421,12 @@ sequenceDiagram
 ```
 
 **1. PR description (`describe` job in `.github/workflows/claude-code-review.yml`)**
+
 - Runs first on every push to a PR that is ready for review. Claude (Opus 5.5) reads the diff and writes the release-facing part of the description, for a product owner and whoever releases it, with no code details: **Summary**, **Business changes** (new, changed or removed features and rules, in plain words), **Schema changes** (a table per changed column: before, after, purpose, and whether it is safe while the old version runs) and **Release notes**. Release notes list only what this PR needs beyond the standard deploy (which always builds, runs migrations, restarts and checks health): the seed command when roles or permissions changed, new variables, third-party accounts or containers to create, a migration that is not backward compatible, one-off data fixes, or a frontend release to coordinate. Otherwise they say "Nothing beyond the standard deploy."
 - It only writes that block to a file; a script step swaps it into the description between `<!-- auto-description:start -->` and `<!-- auto-description:end -->`. Anything written outside the block is kept on every push; on the first run, an existing description moves below it under "Author notes". The job fails (a warning, not a merge block) if no block was produced for the head commit.
 
 **2. Pull request review (`.github/workflows/claude-code-review.yml`)**
+
 - Runs after the description job on every PR that is **ready for review** (not drafts), and again on every new push to that PR; a newer push cancels the run still in progress. It checks the description's schema changes and release notes against the diff: a missing PR-specific step (seed, variable, third-party setup, unsafe migration, data fix) is an Important finding.
 - Claude reads `CLAUDE.md` and the PR description, reviews the **whole diff**, traces **every caller of each changed method, helper, entity or response shape** (also in files the PR does not touch) to catch breakage in existing APIs, and posts one comment: issues bucketed as Critical / Important / Minor, merge notes (migrations, env vars, restarts) and a verdict (✅ mergeable, ⚠️ mergeable with fixes, ❌ not mergeable).
 - It is **read-only** (no checkout, commit or edits) and tuned to avoid noise: "No issues found" is a normal result.
@@ -383,10 +435,12 @@ sequenceDiagram
 - Docs, CI files and lockfile-only changes are skipped.
 
 **3. Build and push (`.github/workflows/ci-cd.yml`)**
+
 - Runs on every push to `master`.
 - Builds the production image and pushes it to Docker Hub tagged with both the commit SHA (immutable, used for deploys and rollbacks) and `latest`.
 
 **4. Continuous delivery (`azure-pipelines.yml`)**
+
 - Started from GitHub with the commit SHA as the `imageTag` parameter (manual trigger only, no CI trigger of its own).
 - Runs on a self-hosted agent pool and connects to the Azure VM over SSH.
 - The VM deploy script pulls `<dockerhub-user>/nest-ims:<sha>`, **runs the migrations**, then replaces the running container with the new image.
@@ -398,11 +452,11 @@ sequenceDiagram
 
 **Required secrets**
 
-| Where | Secret |
-| --- | --- |
-| GitHub | `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `AZDO_ORG`, `AZDO_PROJECT`, `AZDO_PIPELINE_ID`, `AZDO_PAT` |
-| Azure DevOps | SSH service connection to the VM |
-| VM / worker server | all runtime env vars (`DB_*`, `JWT_*`, `APP_URL` and `AZURE_STORAGE_*` on the API, `MAIL_*`, `SEED_SUPER_ADMIN_*`) |
+| Where              | Secret                                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| GitHub             | `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `AZDO_ORG`, `AZDO_PROJECT`, `AZDO_PIPELINE_ID`, `AZDO_PAT` |
+| Azure DevOps       | SSH service connection to the VM                                                                                               |
+| VM / worker server | all runtime env vars (`DB_*`, `JWT_*`, `APP_URL` and `AZURE_STORAGE_*` on the API, `MAIL_*`, `SEED_SUPER_ADMIN_*`)             |
 
 ### 3.5 First deploy checklist
 
@@ -416,26 +470,30 @@ sequenceDiagram
 
 ## 4. Design decisions at a glance
 
-| Decision | Why |
-| --- | --- |
-| Queue + separate worker for email | Keeps API latency low, survives SMTP outages through retries |
-| Quorum queues, ack after handler | No lost jobs on broker or worker restart (at-least-once, idempotent handlers) |
-| Permissions in DB, scoping in code | Change role capabilities with a seed; keep hierarchy rules type-checked and tested |
-| 404 instead of 403 for out-of-scope records | Does not reveal which ids exist |
-| Hashed refresh tokens and OTPs | A database leak does not expose usable credentials |
-| zod for env and requests | One validation library; bad config fails at boot, not at runtime |
-| Migrations only, backward compatible | Zero-downtime deploys; old version keeps working during schema change |
-| One image, many commands | Same artifact for API, worker, migrations and seed; SHA-tagged for rollback |
-| Docker-only development | Identical environment for everyone, one command to start |
-| `MailModule.forRoot(options)` dynamic module | Config is passed in by the caller, so the service never reads env and tests pass options directly |
-| zod schema on the parameter (`@Body({ schema })`) | One schema validates the request and documents it in Swagger; examples are tested against it |
-| Translation keys in exceptions, translated in one filter | Services stay language-agnostic and tests assert keys; adding a language is a folder of JSON files plus its zod locale |
-| Avatars in Azure Blob Storage, URL on the user | The API never serves image bytes; browsers and CDNs load them directly. Blob names are unique, so they are cached for a year and replacing an avatar never shows a stale image |
-| Avatars: size, type from bytes, then full content check; no re-encoding | Each layer stops a different attack (memory, renamed files, polyglots and bombs) while the client keeps control of the image it sends |
-| Audit rows from a TypeORM subscriber, in the change's transaction | Automatic for every entity, and a change can never be saved without its audit entry |
-| `/health` reports, `/health/live` is the probe | Ops see exactly which dependency is down; a dependency outage does not get the API container restarted |
-| Invitation link instead of an emailed password | No password ever sits in a mailbox, a queue message or an admin's head; accepting the link also verifies the email |
-| `user.created` event for invitations | Users stay unaware of invitations and mail; a failed send never fails user creation |
-| Product type on the product, not the category | One category mixes kinds of item; categories stay plain grouping metadata |
-| One measure type per product | Stock ids are per piece or per pack, never per bolt; an item sold both ways is two products |
-| `forwardRef` between Users and Sites | Each rule stays in the service that owns the data; new cycles should prefer a third module or a one-way call |
+| Decision                                                                | Why                                                                                                                                                                            |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Queue + separate worker for email                                       | Keeps API latency low, survives SMTP outages through retries                                                                                                                   |
+| Quorum queues, ack after handler                                        | No lost jobs on broker or worker restart (at-least-once, idempotent handlers)                                                                                                  |
+| Permissions in DB, scoping in code                                      | Change role capabilities with a seed; keep hierarchy rules type-checked and tested                                                                                             |
+| 404 instead of 403 for out-of-scope records                             | Does not reveal which ids exist                                                                                                                                                |
+| Hashed refresh tokens and OTPs                                          | A database leak does not expose usable credentials                                                                                                                             |
+| zod for env and requests                                                | One validation library; bad config fails at boot, not at runtime                                                                                                               |
+| Migrations only, backward compatible                                    | Zero-downtime deploys; old version keeps working during schema change                                                                                                          |
+| One image, many commands                                                | Same artifact for API, worker, migrations and seed; SHA-tagged for rollback                                                                                                    |
+| Docker-only development                                                 | Identical environment for everyone, one command to start                                                                                                                       |
+| `MailModule.forRoot(options)` dynamic module                            | Config is passed in by the caller, so the service never reads env and tests pass options directly                                                                              |
+| zod schema on the parameter (`@Body({ schema })`)                       | One schema validates the request and documents it in Swagger; examples are tested against it                                                                                   |
+| Translation keys in exceptions, translated in one filter                | Services stay language-agnostic and tests assert keys; adding a language is a folder of JSON files plus its zod locale                                                         |
+| Avatars in Azure Blob Storage, URL on the user                          | The API never serves image bytes; browsers and CDNs load them directly. Blob names are unique, so they are cached for a year and replacing an avatar never shows a stale image |
+| Avatars: size, type from bytes, then full content check; no re-encoding | Each layer stops a different attack (memory, renamed files, polyglots and bombs) while the client keeps control of the image it sends                                          |
+| Audit rows from a TypeORM subscriber, in the change's transaction       | Automatic for every entity, and a change can never be saved without its audit entry                                                                                            |
+| `/health` reports, `/health/live` is the probe                          | Ops see exactly which dependency is down; a dependency outage does not get the API container restarted                                                                         |
+| Invitation link instead of an emailed password                          | No password ever sits in a mailbox, a queue message or an admin's head; accepting the link also verifies the email                                                             |
+| `user.created` event for invitations                                    | Users stay unaware of invitations and mail; a failed send never fails user creation                                                                                            |
+| Product type on the product, not the category                           | One category mixes kinds of item; categories stay plain grouping metadata                                                                                                      |
+| One measure type per product                                            | Stock ids are per piece or per pack, never per bolt; an item sold both ways is two products                                                                                    |
+| One row per physical item, no quantity table                            | Every bolt box and drill can be traced; stock counts cannot drift from the items they count                                                                                    |
+| Per-product counter under a row lock                                    | Codes are sequential, never duplicated or reused, without locking anything but that product                                                                                    |
+| Feature roles on top of one primary role                                | Capabilities follow the person, not the site or rank; granting one is a single call, not a new account                                                                         |
+| Lists counted without `select` (`findPageDepthOne`)                     | TypeORM 1.1 counts a selecting find with `COUNT(DISTINCT <all columns>)`, which MySQL makes skip rows with any NULL                                                            |
+| `forwardRef` between Users and Sites                                    | Each rule stays in the service that owns the data; new cycles should prefer a third module or a one-way call                                                                   |

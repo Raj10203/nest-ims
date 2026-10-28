@@ -18,6 +18,7 @@ import { AuthorizationModule } from './modules/authorization/authorization.modul
 import { CategoriesModule } from './modules/categories/categories.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { InvitationsModule } from './modules/invitations/invitations.module.js';
+import { ItemsModule } from './modules/items/items.module.js';
 import { ProductsModule } from './modules/products/products.module.js';
 import { RolesModule } from './modules/roles/roles.module.js';
 import { SitesModule } from './modules/sites/sites.module.js';
@@ -57,6 +58,7 @@ import { UsersModule } from './modules/users/users.module.js';
     SitesModule,
     CategoriesModule,
     ProductsModule,
+    ItemsModule,
     AuthModule,
     InvitationsModule,
     HealthModule,

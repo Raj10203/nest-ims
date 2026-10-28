@@ -23,12 +23,19 @@
     "roleNotFound": "Role {id} does not exist",
     "cannotCreateWithRole": "You are not allowed to create a user with role \"{role}\"",
     "emailTaken": "A user with this email already exists",
-    "inchargeOfSite": "This user is in charge of a site; assign another in-charge first"
+    "inchargeOfSite": "This user is in charge of a site; assign another in-charge first",
+    "siteNotFound": "Site {id} does not exist",
+    "featureRoleNotFound": "Feature role {id} does not exist"
   },
   "sites": {
     "notFound": "Site {id} not found",
     "codeTaken": "A site with this code already exists",
-    "inchargeRoleRequired": "User {id} does not have the {role} role"
+    "inchargeRoleRequired": "User {id} does not have the {role} role",
+    "pincodeFormat": "The pincode must be 6 digits",
+    "hqLocked": "The headquarters site cannot be deleted",
+    "hqMissing": "The headquarters site is not set up; run the seed command",
+    "hasUsers": "Users still belong to this site; move them to another site first",
+    "hasInventory": "This site has stock or stock history and cannot be deleted"
   },
   "categories": {
     "notFound": "Category {id} not found",
@@ -44,7 +51,21 @@
     "packRequired": "Pack size and pack unit are required for a bulk product",
     "packNotAllowed": "Pack size and pack unit are only for bulk products",
     "calibrationRequired": "A calibration interval is required for a calibrated product",
-    "calibrationNotAllowed": "A calibration interval is only for calibrated products"
+    "calibrationNotAllowed": "A calibration interval is only for calibrated products",
+    "lockedByItems": "Prefix, type, measure type and pack details cannot change once the product has items",
+    "hasItems": "This product has items and cannot be deleted"
+  },
+  "items": {
+    "notFound": "Item {id} not found",
+    "productNotFound": "Product {id} does not exist",
+    "productInactive": "Product {id} is inactive",
+    "codeTaken": "An item with code {code} already exists",
+    "suffixFormat": "The code suffix must be 1 to 20 capital letters or digits",
+    "serialTaken": "This product already has an item with this serial number",
+    "conditionNotAllowed": "Consumable items have no condition",
+    "calibrationNotAllowed": "Only calibrated products have a calibration due date",
+    "numbersExhausted": "This product has run out of automatic item numbers",
+    "notDeletable": "Only items available at the headquarters can be deleted"
   },
   "files": {
     "required": "A file is required",
@@ -53,7 +74,7 @@
     "invalidImage": "The image is damaged, contains extra data, or is larger than {maxPx} × {maxPx} pixels"
   },
   "invite": {
-    "invalid": "This invitation link is invalid, already used or expired",
+    "invalid": "This link is invalid, already used or expired",
     "alreadyAccepted": "This user has already set a password"
   },
   "mfa": {

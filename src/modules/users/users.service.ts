@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { subject } from '@casl/ability';
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   forwardRef,
@@ -10,9 +11,12 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
+import { RoleKind } from '../../common/enums/role-kind.enum.js';
 import { assertPasswordAvoidsNames } from '../../common/security/password-policy.js';
 import { hashSecret } from '../../common/security/secret-hash.js';
+import { Site } from '../../entities/site.entity.js';
+import { UserFeatureRole } from '../../entities/user-feature-role.entity.js';
 import { User } from '../../entities/user.entity.js';
 import {
   CaslAbilityFactory,
@@ -22,6 +26,7 @@ import { RolesService } from '../roles/roles.service.js';
 import { SitesService } from '../sites/sites.service.js';
 import { BlobStorageService } from '../storage/blob-storage.service.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
+import { SetFeatureRolesDto } from './dto/set-feature-roles.dto.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
 import { UpdateUserDto } from './dto/update-user.dto.js';
 import { USER_CREATED, UserCreatedEvent } from './events/user-created.event.js';
@@ -30,12 +35,14 @@ import {
   UserEmailChangedEvent,
 } from './events/user-email-changed.event.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
-import { depthOne } from '../../common/typeorm/depth-one.js';
+import { depthOne, findPageDepthOne } from '../../common/typeorm/depth-one.js';
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
+    @InjectRepository(Site) private readonly sites: Repository<Site>,
+    private readonly dataSource: DataSource,
     private readonly roles: RolesService,
     private readonly abilityFactory: CaslAbilityFactory,
     @Inject(forwardRef(() => SitesService))
@@ -66,6 +73,7 @@ export class UsersService {
     if (await this.users.existsBy({ email: dto.email })) {
       throw new ConflictException(i18nMessage('errors.users.emailTaken'));
     }
+    await this.assertSiteExists(dto.siteId);
 
     const created = await this.users.save(
       this.users.create({
@@ -74,6 +82,7 @@ export class UsersService {
         lastName: dto.lastName,
         email: dto.email,
         roleId: role.id,
+        siteId: dto.siteId,
         createdById: actor.id,
       }),
     );
@@ -87,8 +96,7 @@ export class UsersService {
 
   async findAll(actor: User, { page, limit }: ListUsersQueryDto) {
     const ability = this.abilityFactory.createForUser(actor);
-    const [items, total] = await this.users.findAndCount({
-      ...depthOne(this.users),
+    const [items, total] = await findPageDepthOne(this.users, {
       where: readableUsersWhere(actor, ability),
       order: { id: 'ASC' },
       skip: (page - 1) * limit,
@@ -112,6 +120,10 @@ export class UsersService {
       if (await this.users.existsBy({ email: dto.email })) {
         throw new ConflictException(i18nMessage('errors.users.emailTaken'));
       }
+    }
+
+    if (dto.siteId && dto.siteId !== target.siteId) {
+      await this.assertSiteExists(dto.siteId);
     }
 
     const { password, ...rest } = dto;
@@ -154,6 +166,46 @@ export class UsersService {
       );
     }
     return updated;
+  }
+
+  // Replaces the user's feature roles. Same rule as editing the user, so
+  // nobody can grant capabilities to themselves or to a higher role.
+  async setFeatureRoles(
+    actor: User,
+    id: number,
+    { roleIds }: SetFeatureRolesDto,
+  ): Promise<User> {
+    await this.findOneToUpdate(actor, id);
+    const featureRoleIds = new Set(
+      (await this.roles.findAll(RoleKind.FEATURE)).map((role) => role.id),
+    );
+    const unknown = roleIds.find((roleId) => !featureRoleIds.has(roleId));
+    if (unknown !== undefined) {
+      throw new BadRequestException(
+        i18nMessage('errors.users.featureRoleNotFound', { id: unknown }),
+      );
+    }
+
+    // Row by row with save()/remove(), so each grant and revoke is audited.
+    await this.dataSource.transaction(async (manager) => {
+      const grants = manager.getRepository(UserFeatureRole);
+      const current = await grants.find({
+        where: { userId: id },
+        loadEagerRelations: false,
+      });
+      const revoked = current.filter((g) => !roleIds.includes(g.roleId));
+      if (revoked.length) await grants.remove(revoked);
+      const held = new Set(current.map((g) => g.roleId));
+      const added = [...new Set(roleIds)].filter((roleId) => !held.has(roleId));
+      if (added.length) {
+        await grants.save(
+          added.map((roleId) =>
+            grants.create({ userId: id, roleId, grantedById: actor.id }),
+          ),
+        );
+      }
+    });
+    return this.findOneOrFail(id);
   }
 
   async remove(actor: User, id: number): Promise<void> {
@@ -230,14 +282,30 @@ export class UsersService {
     await this.users.update(id, { refreshTokenHash: hash });
   }
 
+  // Includes the feature roles (to-many, so not in depthOne): the user screen
+  // shows and edits them.
   private async findOneOrFail(id: number): Promise<User> {
+    const { select, relations, loadEagerRelations } = depthOne(this.users);
     const user = await this.users.findOne({
-      ...depthOne(this.users),
+      select: {
+        ...select,
+        featureRoles: { id: true, role: { id: true, name: true } },
+      },
+      relations: { ...relations, featureRoles: { role: true } },
+      loadEagerRelations,
       where: { id },
     });
     if (!user)
       throw new NotFoundException(i18nMessage('errors.users.notFound', { id }));
     return user;
+  }
+
+  private async assertSiteExists(id: number): Promise<void> {
+    if (!(await this.sites.existsBy({ id }))) {
+      throw new BadRequestException(
+        i18nMessage('errors.users.siteNotFound', { id }),
+      );
+    }
   }
 
   private assertCan(actor: User, action: string, target: User): void {

@@ -20,6 +20,10 @@ import {
   acceptInvitationSchema,
   type AcceptInvitationDto,
 } from './dto/accept-invitation.dto.js';
+import {
+  forgotPasswordSchema,
+  type ForgotPasswordDto,
+} from './dto/forgot-password.dto.js';
 import { InvitationsService } from './invitations.service.js';
 
 @Controller()
@@ -39,6 +43,24 @@ export class InvitationsController {
   ) {
     await this.invitations.accept(dto.token, dto.password);
     return { message: i18n.t('messages.passwordSet') };
+  }
+
+  // Here rather than in AuthController: the reset link is the invitation's
+  // token and /set-password page, accepted by POST /invitations/accept.
+  @ApiOperation({
+    summary:
+      'Email a link to set a new password (same answer whether or not the account exists)',
+  })
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: minutes(1) } })
+  @Post('auth/forgot-password')
+  @HttpCode(202)
+  forgotPassword(
+    @Body({ schema: forgotPasswordSchema }) dto: ForgotPasswordDto,
+    @I18n() i18n: I18nContext<I18nTranslations>,
+  ) {
+    this.invitations.requestPasswordReset(dto.email);
+    return { message: i18n.t('messages.passwordResetQueued') };
   }
 
   @ApiOperation({

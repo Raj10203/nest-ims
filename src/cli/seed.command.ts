@@ -1,6 +1,9 @@
 import { Command, CommandRunner, Option } from 'nest-commander';
 import { DataSource } from 'typeorm';
-import { ROLE_PERMISSIONS } from '../database/seeds/role-permissions.js';
+import {
+  FEATURE_ROLE_PERMISSIONS,
+  ROLE_PERMISSIONS,
+} from '../database/seeds/role-permissions.js';
 import { seed } from '../database/seeds/seed.js';
 
 interface SeedOptions {
@@ -12,7 +15,7 @@ interface SeedOptions {
 @Command({
   name: 'seed',
   description:
-    'Sync roles and permissions to role-permissions.ts and create the first super admin if missing',
+    'Sync roles and permissions to role-permissions.ts, create the headquarters site and the first super admin if missing',
 })
 export class SeedCommand extends CommandRunner {
   // DataSource comes from TypeOrmModule via normal dependency injection.
@@ -22,7 +25,10 @@ export class SeedCommand extends CommandRunner {
 
   async run(_args: string[], options: SeedOptions): Promise<void> {
     if (options.dryRun) {
-      for (const [role, permissions] of Object.entries(ROLE_PERMISSIONS)) {
+      for (const [role, permissions] of Object.entries({
+        ...ROLE_PERMISSIONS,
+        ...FEATURE_ROLE_PERMISSIONS,
+      })) {
         console.log(
           `${role}: ${permissions.map((p) => p.join(':')).join(', ')}`,
         );

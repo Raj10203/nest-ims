@@ -3,6 +3,7 @@ import { MAIL_OPTIONS, MailOptions, MailService } from './mail.service.js';
 import { SendEmailOtpHandler } from './send-email-otp.handler.js';
 import { SendInviteHandler } from './send-invite.handler.js';
 import { SendLoginOtpHandler } from './send-login-otp.handler.js';
+import { SendPasswordResetHandler } from './send-password-reset.handler.js';
 
 // Worker side only: the API publishes mail jobs through JobsModule.
 @Module({})
@@ -16,8 +17,14 @@ export class MailModule {
         SendEmailOtpHandler,
         SendInviteHandler,
         SendLoginOtpHandler,
+        SendPasswordResetHandler,
       ],
-      exports: [SendEmailOtpHandler, SendInviteHandler, SendLoginOtpHandler],
+      exports: [
+        SendEmailOtpHandler,
+        SendInviteHandler,
+        SendLoginOtpHandler,
+        SendPasswordResetHandler,
+      ],
     };
   }
 }

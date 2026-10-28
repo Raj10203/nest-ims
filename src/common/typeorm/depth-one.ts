@@ -1,5 +1,6 @@
 import type {
   EntityMetadata,
+  FindManyOptions,
   FindOptionsRelations,
   FindOptionsSelect,
   ObjectLiteral,
@@ -49,4 +50,17 @@ export function depthOne<T extends ObjectLiteral>(
     relations: relations as FindOptionsRelations<T>,
     loadEagerRelations: false,
   };
+}
+
+// findAndCount with depthOne, but counted without `select`: TypeORM 1.1 counts
+// a find that has one with COUNT(DISTINCT <every selected column>), and MySQL
+// leaves out each row where any of those columns is NULL.
+export function findPageDepthOne<T extends ObjectLiteral>(
+  repository: Repository<T>,
+  options: Omit<FindManyOptions<T>, keyof DepthOneOptions<T>>,
+): Promise<[T[], number]> {
+  return Promise.all([
+    repository.find({ ...depthOne(repository), ...options }),
+    repository.count({ where: options.where }),
+  ]);
 }

@@ -21,7 +21,12 @@ function setup(incharge: Partial<User> | Error) {
         : Promise.resolve(incharge),
     ),
   };
-  const service = new SitesService(sites as any, users as any);
+  const service = new SitesService(
+    sites as any,
+    {} as any,
+    {} as any,
+    users as any,
+  );
   return { service, sites, users };
 }
 
