@@ -116,6 +116,7 @@ export async function seed(dataSource: DataSource): Promise<void> {
           email: seedEnv.SEED_SUPER_ADMIN_EMAIL.toLowerCase(),
           password: await hashSecret(seedEnv.SEED_SUPER_ADMIN_PASSWORD),
           emailVerifiedAt: new Date(),
+          activatedAt: new Date(),
           roleId: superAdminRole.id,
           siteId: hq.id,
           createdById: null,

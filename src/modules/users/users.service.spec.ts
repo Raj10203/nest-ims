@@ -1,6 +1,7 @@
 import { ConflictException } from '@nestjs/common';
 import { RoleKind } from '../../common/enums/role-kind.enum.js';
 import { RoleName } from '../../common/enums/role-name.enum.js';
+import { UserStatus } from '../../common/enums/user-status.enum.js';
 import { User } from '../../entities/user.entity.js';
 import { CaslAbilityFactory } from '../authorization/casl-ability.factory.js';
 import { UsersService } from './users.service.js';
@@ -18,12 +19,16 @@ const admin = {
   },
 } as unknown as User;
 
-const target = {
+const targetRow = {
   id: 2,
   email: 'old@example.com',
   createdById: 1,
+  roleId: 5,
   role: { level: 20 },
-} as unknown as User;
+  isActive: true,
+  activatedAt: null,
+};
+const target = targetRow as unknown as User;
 
 function setup() {
   const users = {
@@ -50,11 +55,23 @@ function setup() {
     deleteByUrl: vi.fn().mockResolvedValue(undefined),
   };
   const events = { emit: vi.fn() };
+  const roles = {
+    findById: vi.fn((id: number) =>
+      Promise.resolve(
+        [
+          { id: 3, name: RoleName.MANAGER, level: 60 },
+          { id: 4, name: RoleName.SITE_INCHARGE, level: 40 },
+          { id: 5, name: RoleName.SITE_TECHNICIAN, level: 20 },
+          { id: 2, name: RoleName.ADMIN, level: 80 },
+        ].find((role) => role.id === id) ?? null,
+      ),
+    ),
+  };
   const service = new UsersService(
     users as any,
     {} as any,
     {} as any,
-    {} as any,
+    roles as any,
     new CaslAbilityFactory(),
     sites as any,
     storage as any,
@@ -95,6 +112,174 @@ describe('UsersService.update', () => {
     await service.update(admin, 2, { firstName: 'Ann' });
     expect(users.save).toHaveBeenCalledWith({ id: 2, firstName: 'Ann' });
     expect(events.emit).not.toHaveBeenCalled();
+  });
+
+  it('activates a pending user when an admin sets the password', async () => {
+    const { service, users } = setup();
+    await service.update(admin, 2, { password: 'N3w-Passw0rd!' });
+    expect(users.save.mock.calls[0][0].activatedAt).toBeInstanceOf(Date);
+  });
+});
+
+describe('UsersService.findAll filters', () => {
+  async function whereFor(actor: User, query: object) {
+    const { service, users } = setup();
+    users.find.mockResolvedValue([]);
+    users.count.mockResolvedValue(0);
+    await service.findAll(actor, { page: 1, limit: 20, ...query });
+    return users.count.mock.calls[0][0].where;
+  }
+
+  it('adds the filters to every branch of the read scope', async () => {
+    const where = await whereFor(admin, {
+      roleId: 5,
+      siteId: 3,
+      status: UserStatus.INACTIVE,
+    });
+    // Admin scope: lower roles OR themselves.
+    expect(where).toHaveLength(2);
+    for (const branch of where) {
+      expect(branch).toMatchObject({ roleId: 5, siteId: 3, isActive: false });
+    }
+  });
+
+  it('searches names and email inside the scope', async () => {
+    const where = await whereFor(admin, { search: 'jan' });
+    expect(where).toHaveLength(6);
+    expect(where.map((b: object) => Object.keys(b).at(-1))).toEqual([
+      'firstName',
+      'lastName',
+      'email',
+      'firstName',
+      'lastName',
+      'email',
+    ]);
+  });
+
+  it('uses a single condition when the actor sees everyone', async () => {
+    const superAdmin = {
+      id: 1,
+      role: {
+        name: RoleName.SUPER_ADMIN,
+        level: 100,
+        permissions: [{ action: 'manage', subject: 'all' }],
+      },
+    } as unknown as User;
+    const where = await whereFor(superAdmin, { status: UserStatus.INVITED });
+    expect(where).toMatchObject({ isActive: true });
+    expect(where.activatedAt).toBeDefined();
+  });
+});
+
+describe('UsersService.changeRole', () => {
+  it('saves a role lower than the actor’s', async () => {
+    const { service, users } = setup();
+    await service.changeRole(admin, 2, { roleId: 3 });
+    expect(users.save).toHaveBeenCalledWith({ id: 2, roleId: 3 });
+  });
+
+  it('refuses a role at or above the actor’s level', async () => {
+    const { service, users } = setup();
+    await expect(service.changeRole(admin, 2, { roleId: 2 })).rejects.toThrow(
+      'errors.users.cannotAssignRole',
+    );
+    expect(users.save).not.toHaveBeenCalled();
+  });
+
+  it('refuses a primary role that does not exist', async () => {
+    const { service } = setup();
+    await expect(service.changeRole(admin, 2, { roleId: 99 })).rejects.toThrow(
+      'errors.users.roleNotFound',
+    );
+  });
+
+  it('keeps a site in-charge in the site_incharge role', async () => {
+    const { service, users, sites } = setup();
+    sites.isInchargeOfAnySite.mockResolvedValue(true);
+    await expect(service.changeRole(admin, 2, { roleId: 3 })).rejects.toThrow(
+      'errors.users.inchargeOfSite',
+    );
+    await service.changeRole(admin, 2, { roleId: 4 });
+    expect(users.save).toHaveBeenCalledWith({ id: 2, roleId: 4 });
+  });
+
+  it('does nothing when the role is unchanged', async () => {
+    const { service, users } = setup();
+    await service.changeRole(admin, 2, { roleId: 5 });
+    expect(users.save).not.toHaveBeenCalled();
+  });
+});
+
+describe('UsersService on your own account', () => {
+  const superAdmin = {
+    id: 1,
+    role: {
+      name: RoleName.SUPER_ADMIN,
+      level: 100,
+      permissions: [{ action: 'manage', subject: 'all' }],
+    },
+  } as unknown as User;
+
+  it('refuses to let a super admin deactivate themselves', async () => {
+    const { service, users } = setup();
+    await expect(service.deactivate(superAdmin, 1)).rejects.toThrow(
+      'errors.users.ownAccount',
+    );
+    expect(users.save).not.toHaveBeenCalled();
+  });
+
+  it('refuses to let a super admin change their own role', async () => {
+    const { service, users } = setup();
+    await expect(
+      service.changeRole(superAdmin, 1, { roleId: 3 }),
+    ).rejects.toThrow('errors.users.ownAccount');
+    expect(users.save).not.toHaveBeenCalled();
+  });
+});
+
+describe('UsersService.deactivate / reactivate', () => {
+  it('deactivates, ends every session and voids pending links', async () => {
+    const { service, users } = setup();
+    await service.deactivate(admin, 2);
+    expect(users.save).toHaveBeenCalledWith({
+      id: 2,
+      isActive: false,
+      refreshTokenHash: null,
+      inviteTokenHash: null,
+      inviteExpiresAt: null,
+    });
+  });
+
+  it('refuses to deactivate a site in-charge', async () => {
+    const { service, users, sites } = setup();
+    sites.isInchargeOfAnySite.mockResolvedValue(true);
+    await expect(service.deactivate(admin, 2)).rejects.toThrow(
+      'errors.users.inchargeOfSite',
+    );
+    expect(users.save).not.toHaveBeenCalled();
+  });
+
+  it('reactivates a deactivated user', async () => {
+    const { service, users } = setup();
+    users.findOne.mockResolvedValue({ ...targetRow, isActive: false });
+    await service.reactivate(admin, 2);
+    expect(users.save).toHaveBeenCalledWith({ id: 2, isActive: true });
+  });
+
+  it('hides users the actor may not update', async () => {
+    const { service, users } = setup();
+    users.findOne.mockResolvedValue({ ...targetRow, createdById: 3 });
+    const manager = {
+      id: 8,
+      role: {
+        name: RoleName.MANAGER,
+        level: 60,
+        permissions: [{ action: 'update', subject: 'User' }],
+      },
+    } as unknown as User;
+    await expect(service.deactivate(manager, 2)).rejects.toThrow(
+      'errors.users.notFound',
+    );
   });
 });
 
@@ -139,7 +324,18 @@ describe('UsersService.remove', () => {
     expect(users.remove).not.toHaveBeenCalled();
   });
 
-  it('deletes a user who is not in charge of any site', async () => {
+  it('refuses to delete a user who has set a password', async () => {
+    const { service, users } = setup();
+    // Checked on the password, so a user activated before activatedAt existed
+    // (or by the previous version during a deploy) is protected too.
+    users.existsBy.mockResolvedValue(true);
+    await expect(service.remove(admin, 2)).rejects.toThrow(
+      'errors.users.deleteActivated',
+    );
+    expect(users.remove).not.toHaveBeenCalled();
+  });
+
+  it('deletes a pending user who is not in charge of any site', async () => {
     const { service, users } = setup();
     await service.remove(admin, 2);
     expect(users.remove).toHaveBeenCalledWith(

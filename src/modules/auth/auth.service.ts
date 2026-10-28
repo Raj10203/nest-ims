@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { env } from '../../config/env.js';
+import { assertPasswordAvoidsNames } from '../../common/security/password-policy.js';
 import { hashSecret, verifySecret } from '../../common/security/secret-hash.js';
 import { User } from '../../entities/user.entity.js';
 import { UsersService } from '../users/users.service.js';
@@ -11,6 +16,16 @@ import { MfaService } from './mfa.service.js';
 export interface TokenPair {
   accessToken: string;
   refreshToken: string;
+}
+
+// Checked only after the password or token is proven, so the answer reveals
+// nothing about an account to someone without its credentials.
+export function assertActive(user: Pick<User, 'isActive'>): void {
+  if (!user.isActive) {
+    throw new UnauthorizedException(
+      i18nMessage('errors.auth.accountDeactivated'),
+    );
+  }
 }
 
 @Injectable()
@@ -29,6 +44,8 @@ export class AuthService {
         i18nMessage('errors.auth.invalidCredentials'),
       );
     }
+    assertActive(found);
+    if (!found.activatedAt) await this.users.markActivated(found.id);
     if (found.mfaEnabled) return this.mfa.startChallenge(found);
     return this.signIn(found.id);
   }
@@ -61,6 +78,7 @@ export class AuthService {
         i18nMessage('errors.auth.invalidRefreshToken'),
       );
     }
+    assertActive(user);
     return this.issueTokens(user.id);
   }
 
@@ -68,8 +86,33 @@ export class AuthService {
     return this.users.setRefreshTokenHash(user.id, null);
   }
 
+  // The new token pair replaces the one stored refresh token, so every other
+  // session ends while this one carries on.
+  async changePassword(
+    user: User,
+    currentPassword: string,
+    password: string,
+  ): Promise<TokenPair> {
+    const found = await this.users.findByEmailWithPassword(user.email);
+    if (
+      !found?.password ||
+      !(await verifySecret(currentPassword, found.password))
+    ) {
+      throw new BadRequestException(i18nMessage('errors.auth.wrongPassword'));
+    }
+    assertPasswordAvoidsNames(password, [user.firstName, user.lastName]);
+    await this.users.setPassword(user.id, await hashSecret(password));
+    return this.issueTokens(user.id);
+  }
+
   private async signIn(userId: number) {
     const user = await this.users.findById(userId);
+    if (!user)
+      throw new UnauthorizedException(
+        i18nMessage('errors.auth.userNoLongerExists'),
+      );
+    // Also catches a user deactivated between the two MFA steps.
+    assertActive(user);
     return { user, ...(await this.issueTokens(userId)) };
   }
 

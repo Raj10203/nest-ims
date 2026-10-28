@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 
@@ -12,7 +12,9 @@ function setup(
     key === 'allow_unverified_email' ? meta.allowUnverified : undefined,
   );
   const jwt = { verifyAsync: vi.fn().mockResolvedValue(payload) };
-  const users = { findById: vi.fn().mockResolvedValue(user) };
+  const users = {
+    findById: vi.fn().mockResolvedValue({ isActive: true, ...user }),
+  };
   const request = { headers: { authorization: 'Bearer token' } };
   const context = {
     getHandler: () => undefined,
@@ -28,6 +30,20 @@ function setup(
   );
   return { guard, context: context as any };
 }
+
+describe('JwtAuthGuard deactivated users', () => {
+  it('rejects a deactivated user with 401, so the client signs out', async () => {
+    const { guard, context } = setup({
+      id: 1,
+      emailVerifiedAt: new Date(),
+      isActive: false,
+      role: { name: 'admin' },
+    });
+    await expect(guard.canActivate(context)).rejects.toThrow(
+      UnauthorizedException,
+    );
+  });
+});
 
 describe('JwtAuthGuard email verification', () => {
   it('blocks an unverified user', async () => {

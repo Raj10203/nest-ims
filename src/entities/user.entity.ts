@@ -36,6 +36,19 @@ export class User extends BaseEntity {
   @Column({ type: 'varchar', length: 255, nullable: true, select: false })
   password: string | null;
 
+  // When the first password was set; null means the invitation is pending.
+  // Kept in step with `password`, which is never cleared once set.
+  @Column({ type: 'timestamp', nullable: true })
+  activatedAt: Date | null;
+
+  // When the latest invitation was sent (it expires INVITE_TTL_HOURS later).
+  @NotAudited()
+  @Column({ type: 'timestamp', nullable: true })
+  invitedAt: Date | null;
+
+  @Column({ default: true })
+  isActive: boolean;
+
   // SHA-256 of the invitation link's token (looked up by hash; see hashToken).
   @NotAudited()
   @Index()

@@ -8,7 +8,9 @@
     "missingBearerToken": "Missing bearer token",
     "invalidAccessToken": "Invalid or expired access token",
     "userNoLongerExists": "User no longer exists",
-    "emailNotVerified": "Email is not verified"
+    "emailNotVerified": "Email is not verified",
+    "accountDeactivated": "This account is deactivated; contact your administrator",
+    "wrongPassword": "The password is incorrect"
   },
   "otp": {
     "format": "OTP must be 6 digits",
@@ -25,7 +27,11 @@
     "emailTaken": "A user with this email already exists",
     "inchargeOfSite": "This user is in charge of a site; assign another in-charge first",
     "siteNotFound": "Site {id} does not exist",
-    "featureRoleNotFound": "Feature role {id} does not exist"
+    "featureRoleNotFound": "Feature role {id} does not exist",
+    "cannotAssignRole": "You are not allowed to give a user the role \"{role}\"",
+    "deleteActivated": "This user has already set a password; deactivate the account instead",
+    "inactive": "This user is deactivated; reactivate the account first",
+    "ownAccount": "You cannot deactivate your own account or change your own role"
   },
   "sites": {
     "notFound": "Site {id} not found",
@@ -35,7 +41,8 @@
     "hqLocked": "The headquarters site cannot be deleted",
     "hqMissing": "The headquarters site is not set up; run the seed command",
     "hasUsers": "Users still belong to this site; move them to another site first",
-    "hasInventory": "This site has stock or stock history and cannot be deleted"
+    "hasInventory": "This site has stock or stock history and cannot be deleted",
+    "inchargeInactive": "User {id} is deactivated"
   },
   "categories": {
     "notFound": "Category {id} not found",
@@ -79,7 +86,6 @@
   },
   "mfa": {
     "invalidChallenge": "Your sign-in has expired; log in again",
-    "wrongPassword": "The password is incorrect",
     "locked": "Too many wrong codes; try again in {minutes} minutes"
   },
   "password": {

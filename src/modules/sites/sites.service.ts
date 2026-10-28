@@ -7,7 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Like, Repository } from 'typeorm';
 import { RoleName } from '../../common/enums/role-name.enum.js';
 import { SiteType } from '../../common/enums/site-type.enum.js';
 import { ItemMovement } from '../../entities/item-movement.entity.js';
@@ -19,6 +19,7 @@ import { ListSitesQueryDto } from './dto/list-sites-query.dto.js';
 import { UpdateSiteDto } from './dto/update-site.dto.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
 import { depthOne, findPageDepthOne } from '../../common/typeorm/depth-one.js';
+import { containsPattern } from '../../common/typeorm/like-pattern.js';
 
 // Sites are shared: anyone holding the permission (see role-permissions.ts)
 // can act on every site, so there is no per-record scoping here.
@@ -54,8 +55,10 @@ export class SitesService {
     return this.findOneOrFail(saved.id);
   }
 
-  async findAll({ page, limit }: ListSitesQueryDto) {
+  async findAll({ search, page, limit }: ListSitesQueryDto) {
+    const pattern = search && Like(containsPattern(search));
     const [items, total] = await findPageDepthOne(this.sites, {
+      where: pattern ? [{ name: pattern }, { code: pattern }] : {},
       order: { id: 'ASC' },
       skip: (page - 1) * limit,
       take: limit,
@@ -104,6 +107,11 @@ export class SitesService {
     userId: number,
   ): Promise<void> {
     const user = await this.usersService.findOneFor(actor, userId);
+    if (!user.isActive) {
+      throw new BadRequestException(
+        i18nMessage('errors.sites.inchargeInactive', { id: userId }),
+      );
+    }
     if (user.role.name !== RoleName.SITE_INCHARGE) {
       throw new BadRequestException(
         i18nMessage('errors.sites.inchargeRoleRequired', {

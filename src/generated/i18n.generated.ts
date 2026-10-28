@@ -16,6 +16,8 @@ export type I18nTranslations = {
             "invalidAccessToken": string;
             "userNoLongerExists": string;
             "emailNotVerified": string;
+            "accountDeactivated": string;
+            "wrongPassword": string;
         };
         "otp": {
             "format": string;
@@ -33,6 +35,10 @@ export type I18nTranslations = {
             "inchargeOfSite": string;
             "siteNotFound": string;
             "featureRoleNotFound": string;
+            "cannotAssignRole": string;
+            "deleteActivated": string;
+            "inactive": string;
+            "ownAccount": string;
         };
         "sites": {
             "notFound": string;
@@ -43,6 +49,7 @@ export type I18nTranslations = {
             "hqMissing": string;
             "hasUsers": string;
             "hasInventory": string;
+            "inchargeInactive": string;
         };
         "categories": {
             "notFound": string;
@@ -86,7 +93,6 @@ export type I18nTranslations = {
         };
         "mfa": {
             "invalidChallenge": string;
-            "wrongPassword": string;
             "locked": string;
         };
         "password": {
@@ -106,6 +112,7 @@ export type I18nTranslations = {
         "mfaEnabled": string;
         "mfaDisabled": string;
         "passwordResetQueued": string;
+        "passwordChanged": string;
     };
 };
 /* prettier-ignore */
