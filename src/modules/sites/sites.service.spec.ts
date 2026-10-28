@@ -34,6 +34,7 @@ describe('SitesService in-charge', () => {
   it('saves a site whose in-charge has the site_incharge role', async () => {
     const { service, sites, users } = setup({
       id: 5,
+      isActive: true,
       role: { name: RoleName.SITE_INCHARGE } as User['role'],
     });
     await service.create(actor, { ...dto, inchargeId: 5 });
@@ -43,9 +44,22 @@ describe('SitesService in-charge', () => {
     );
   });
 
+  it('rejects a deactivated in-charge', async () => {
+    const { service, sites } = setup({
+      id: 5,
+      isActive: false,
+      role: { name: RoleName.SITE_INCHARGE } as User['role'],
+    });
+    await expect(
+      service.create(actor, { ...dto, inchargeId: 5 }),
+    ).rejects.toThrow('errors.sites.inchargeInactive');
+    expect(sites.save).not.toHaveBeenCalled();
+  });
+
   it('rejects an in-charge with another role', async () => {
     const { service, sites } = setup({
       id: 5,
+      isActive: true,
       role: { name: RoleName.SITE_TECHNICIAN } as User['role'],
     });
     await expect(

@@ -1,9 +1,18 @@
-import { Body, Controller, Get, HttpCode, Post, Put } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Patch,
+  Post,
+  Put,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { minutes, Throttle } from '@nestjs/throttler';
 import { I18n, I18nContext } from 'nestjs-i18n';
 import type { I18nTranslations } from '../../generated/i18n.generated.js';
 import { User } from '../../entities/user.entity.js';
+import { UsersService } from '../users/users.service.js';
 import { AllowUnverifiedEmail } from './allow-unverified-email.decorator.js';
 import { AuthService } from './auth.service.js';
 import { CurrentUser } from './current-user.decorator.js';
@@ -16,6 +25,12 @@ import {
   type SetMfaDto,
 } from './dto/mfa.dto.js';
 import { MfaService } from './mfa.service.js';
+import {
+  changePasswordSchema,
+  updateProfileSchema,
+  type ChangePasswordDto,
+  type UpdateProfileDto,
+} from './dto/profile.dto.js';
 import {
   refreshTokenSchema,
   type RefreshTokenDto,
@@ -34,6 +49,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly emailVerification: EmailVerificationService,
     private readonly mfa: MfaService,
+    private readonly users: UsersService,
   ) {}
 
   @ApiOperation({
@@ -110,6 +126,37 @@ export class AuthController {
   @Get('me')
   me(@CurrentUser() user: User) {
     return user;
+  }
+
+  @ApiOperation({ summary: 'Change your own name' })
+  @ApiBearerAuth()
+  @Patch('me')
+  updateMe(
+    @CurrentUser() user: User,
+    @Body({ schema: updateProfileSchema }) dto: UpdateProfileDto,
+  ) {
+    return this.users.updateProfile(user.id, dto);
+  }
+
+  @ApiOperation({
+    summary:
+      'Change your password. Returns a new token pair; your other sessions end',
+  })
+  @ApiBearerAuth()
+  @Throttle({ default: { limit: 5, ttl: minutes(1) } })
+  @Put('me/password')
+  @HttpCode(200)
+  async changePassword(
+    @CurrentUser() user: User,
+    @Body({ schema: changePasswordSchema }) dto: ChangePasswordDto,
+    @I18n() i18n: I18nContext<I18nTranslations>,
+  ) {
+    const tokens = await this.authService.changePassword(
+      user,
+      dto.currentPassword,
+      dto.password,
+    );
+    return { ...tokens, message: i18n.t('messages.passwordChanged') };
   }
 
   @ApiOperation({ summary: 'Email a verification code (see Mailpit in dev)' })

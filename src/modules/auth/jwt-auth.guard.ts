@@ -14,6 +14,7 @@ import { env } from '../../config/env.js';
 import { User } from '../../entities/user.entity.js';
 import { UsersService } from '../users/users.service.js';
 import { ALLOW_UNVERIFIED_EMAIL } from './allow-unverified-email.decorator.js';
+import { assertActive } from './auth.service.js';
 import { MFA_TOKEN_TYPE } from './mfa.service.js';
 import { IS_PUBLIC } from './public.decorator.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
@@ -68,6 +69,8 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException(
         i18nMessage('errors.auth.userNoLongerExists'),
       );
+    // 401, not 403: the UI treats it as a lost session and signs out.
+    assertActive(user);
 
     const allowUnverified = this.reflector.getAllAndOverride<
       boolean | undefined

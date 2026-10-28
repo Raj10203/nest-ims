@@ -11,8 +11,17 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import {
+  DataSource,
+  FindOptionsWhere,
+  IsNull,
+  Like,
+  Not,
+  Repository,
+} from 'typeorm';
 import { RoleKind } from '../../common/enums/role-kind.enum.js';
+import { RoleName } from '../../common/enums/role-name.enum.js';
+import { UserStatus } from '../../common/enums/user-status.enum.js';
 import { assertPasswordAvoidsNames } from '../../common/security/password-policy.js';
 import { hashSecret } from '../../common/security/secret-hash.js';
 import { Site } from '../../entities/site.entity.js';
@@ -25,6 +34,8 @@ import {
 import { RolesService } from '../roles/roles.service.js';
 import { SitesService } from '../sites/sites.service.js';
 import { BlobStorageService } from '../storage/blob-storage.service.js';
+import { containsPattern } from '../../common/typeorm/like-pattern.js';
+import { ChangeRoleDto } from './dto/change-role.dto.js';
 import { CreateUserDto } from './dto/create-user.dto.js';
 import { SetFeatureRolesDto } from './dto/set-feature-roles.dto.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
@@ -36,6 +47,12 @@ import {
 } from './events/user-email-changed.event.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
 import { depthOne, findPageDepthOne } from '../../common/typeorm/depth-one.js';
+
+const STATUS_WHERE: Record<UserStatus, FindOptionsWhere<User>> = {
+  [UserStatus.INVITED]: { isActive: true, activatedAt: IsNull() },
+  [UserStatus.ACTIVE]: { isActive: true, activatedAt: Not(IsNull()) },
+  [UserStatus.INACTIVE]: { isActive: false },
+};
 
 @Injectable()
 export class UsersService {
@@ -53,11 +70,7 @@ export class UsersService {
   ) {}
 
   async create(actor: User, dto: CreateUserDto): Promise<User> {
-    const role = await this.roles.findById(dto.roleId);
-    if (!role)
-      throw new NotFoundException(
-        i18nMessage('errors.users.roleNotFound', { id: dto.roleId }),
-      );
+    const role = await this.findRoleOrFail(dto.roleId);
 
     const ability = this.abilityFactory.createForUser(actor);
     const candidate = subject('User', {
@@ -94,11 +107,27 @@ export class UsersService {
     return this.findOneOrFail(created.id);
   }
 
-  async findAll(actor: User, { page, limit }: ListUsersQueryDto) {
+  async findAll(
+    actor: User,
+    { search, roleId, siteId, status, page, limit }: ListUsersQueryDto,
+  ) {
     const ability = this.abilityFactory.createForUser(actor);
+    const filters: FindOptionsWhere<User> = {
+      ...(roleId && { roleId }),
+      ...(siteId && { siteId }),
+      ...(status && STATUS_WHERE[status]),
+    };
+    const pattern = search && Like(containsPattern(search));
+    const matches: FindOptionsWhere<User>[] = pattern
+      ? [{ firstName: pattern }, { lastName: pattern }, { email: pattern }]
+      : [{}];
+    // OR of (scope AND filters AND one search column) for every combination.
+    const where = (readableUsersWhere(actor, ability) ?? [{}]).flatMap(
+      (scope) => matches.map((match) => ({ ...scope, ...filters, ...match })),
+    );
     const [items, total] = await findPageDepthOne(this.users, {
-      where: readableUsersWhere(actor, ability),
-      order: { id: 'ASC' },
+      where: where.length === 1 ? where[0] : where,
+      order: { firstName: 'ASC', lastName: 'ASC', id: 'ASC' },
       skip: (page - 1) * limit,
       take: limit,
     });
@@ -153,6 +182,7 @@ export class UsersService {
       ...(password
         ? {
             password: await hashSecret(password),
+            activatedAt: target.activatedAt ?? new Date(),
             inviteTokenHash: null,
             inviteExpiresAt: null,
           }
@@ -208,9 +238,75 @@ export class UsersService {
     return this.findOneOrFail(id);
   }
 
+  // The primary role only; feature roles stay. The user must stay in the
+  // actor's scope with the new role, as when creating one.
+  async changeRole(
+    actor: User,
+    id: number,
+    { roleId }: ChangeRoleDto,
+  ): Promise<User> {
+    const target = await this.findOneToUpdate(actor, id);
+    if (roleId === target.roleId) return target;
+    const role = await this.findRoleOrFail(roleId);
+    const ability = this.abilityFactory.createForUser(actor);
+    if (
+      !ability.can(
+        'update',
+        subject('User', {
+          role: { level: role.level },
+          createdById: target.createdById,
+        }),
+      )
+    ) {
+      throw new ForbiddenException(
+        i18nMessage('errors.users.cannotAssignRole', { role: role.name }),
+      );
+    }
+    // A site's in-charge must hold the site_incharge role (SitesService).
+    if (
+      role.name !== RoleName.SITE_INCHARGE &&
+      (await this.sitesService.isInchargeOfAnySite(id))
+    ) {
+      throw new ConflictException(i18nMessage('errors.users.inchargeOfSite'));
+    }
+    await this.users.save({ id, roleId: role.id });
+    return this.findOneOrFail(id);
+  }
+
+  async deactivate(actor: User, id: number): Promise<User> {
+    const target = await this.findOneToUpdate(actor, id);
+    if (!target.isActive) return target;
+    if (await this.sitesService.isInchargeOfAnySite(id)) {
+      throw new ConflictException(i18nMessage('errors.users.inchargeOfSite'));
+    }
+    // Ends every session and voids any invitation or password reset link;
+    // JwtAuthGuard rejects the access tokens still out there.
+    await this.users.save({
+      id,
+      isActive: false,
+      refreshTokenHash: null,
+      inviteTokenHash: null,
+      inviteExpiresAt: null,
+    });
+    return this.findOneOrFail(id);
+  }
+
+  // A pending user needs the invitation resent: deactivation voided the link.
+  async reactivate(actor: User, id: number): Promise<User> {
+    const target = await this.findOneToUpdate(actor, id);
+    if (target.isActive) return target;
+    await this.users.save({ id, isActive: true });
+    return this.findOneOrFail(id);
+  }
+
+  // Only a mistaken invitation is deleted; a user who has signed in keeps their
+  // record (and the history that points to it) and is deactivated instead.
   async remove(actor: User, id: number): Promise<void> {
     const target = await this.findOneOrFail(id);
     this.assertCan(actor, 'delete', target);
+    if (target.activatedAt) {
+      throw new ConflictException(i18nMessage('errors.users.deleteActivated'));
+    }
     if (await this.sitesService.isInchargeOfAnySite(id)) {
       throw new ConflictException(i18nMessage('errors.users.inchargeOfSite'));
     }
@@ -282,6 +378,25 @@ export class UsersService {
     await this.users.update(id, { refreshTokenHash: hash });
   }
 
+  // Self-service: the names only, no scope check.
+  async updateProfile(
+    id: number,
+    dto: Pick<UpdateUserDto, 'firstName' | 'middleName' | 'lastName'>,
+  ): Promise<User> {
+    await this.users.save({ id, ...dto });
+    return (await this.findById(id))!;
+  }
+
+  // Also voids a pending password reset link.
+  async setPassword(id: number, passwordHash: string): Promise<void> {
+    await this.users.save({
+      id,
+      password: passwordHash,
+      inviteTokenHash: null,
+      inviteExpiresAt: null,
+    });
+  }
+
   // Includes the feature roles (to-many, so not in depthOne): the user screen
   // shows and edits them.
   private async findOneOrFail(id: number): Promise<User> {
@@ -298,6 +413,15 @@ export class UsersService {
     if (!user)
       throw new NotFoundException(i18nMessage('errors.users.notFound', { id }));
     return user;
+  }
+
+  private async findRoleOrFail(id: number) {
+    const role = await this.roles.findById(id);
+    if (!role)
+      throw new NotFoundException(
+        i18nMessage('errors.users.roleNotFound', { id }),
+      );
+    return role;
   }
 
   private async assertSiteExists(id: number): Promise<void> {

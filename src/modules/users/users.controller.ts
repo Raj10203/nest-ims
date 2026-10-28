@@ -24,6 +24,7 @@ import { User } from '../../entities/user.entity.js';
 import { CurrentUser } from '../auth/current-user.decorator.js';
 import { CheckAbility } from '../authorization/check-ability.decorator.js';
 import { PoliciesGuard } from '../authorization/policies.guard.js';
+import { changeRoleSchema, type ChangeRoleDto } from './dto/change-role.dto.js';
 import { createUserSchema, type CreateUserDto } from './dto/create-user.dto.js';
 import {
   setFeatureRolesSchema,
@@ -57,7 +58,10 @@ export class UsersController {
     return this.usersService.create(actor, dto);
   }
 
-  @ApiOperation({ summary: 'List the users you can see' })
+  @ApiOperation({
+    summary:
+      'List the users you can see (search matches names and email; status: invited, active or inactive)',
+  })
   @Get()
   @CheckAbility('read', 'User')
   findAll(
@@ -141,7 +145,51 @@ export class UsersController {
     return this.usersService.setFeatureRoles(actor, id, dto);
   }
 
-  @ApiOperation({ summary: 'Delete a user' })
+  @ApiOperation({
+    summary:
+      'Change the primary role of a user (the new role must be lower than yours)',
+  })
+  @Put(':id/role')
+  @CheckAbility('update', 'User')
+  changeRole(
+    @CurrentUser() actor: User,
+    @Param('id', { schema: idParamSchema }) id: number,
+    @Body({ schema: changeRoleSchema }) dto: ChangeRoleDto,
+  ) {
+    return this.usersService.changeRole(actor, id, dto);
+  }
+
+  @ApiOperation({
+    summary: 'Deactivate a user: blocks login and ends every session',
+  })
+  @Post(':id/deactivate')
+  @HttpCode(200)
+  @CheckAbility('update', 'User')
+  deactivate(
+    @CurrentUser() actor: User,
+    @Param('id', { schema: idParamSchema }) id: number,
+  ) {
+    return this.usersService.deactivate(actor, id);
+  }
+
+  @ApiOperation({
+    summary:
+      'Reactivate a user (a user who never set a password needs the invitation resent)',
+  })
+  @Post(':id/reactivate')
+  @HttpCode(200)
+  @CheckAbility('update', 'User')
+  reactivate(
+    @CurrentUser() actor: User,
+    @Param('id', { schema: idParamSchema }) id: number,
+  ) {
+    return this.usersService.reactivate(actor, id);
+  }
+
+  @ApiOperation({
+    summary:
+      'Delete a user who never set a password (deactivate anyone else instead)',
+  })
   @Delete(':id')
   @HttpCode(204)
   @CheckAbility('delete', 'User')

@@ -104,6 +104,11 @@ export class SitesService {
     userId: number,
   ): Promise<void> {
     const user = await this.usersService.findOneFor(actor, userId);
+    if (!user.isActive) {
+      throw new BadRequestException(
+        i18nMessage('errors.sites.inchargeInactive', { id: userId }),
+      );
+    }
     if (user.role.name !== RoleName.SITE_INCHARGE) {
       throw new BadRequestException(
         i18nMessage('errors.sites.inchargeRoleRequired', {
