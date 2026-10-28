@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, MoreThan, Not, Repository } from 'typeorm';
@@ -17,10 +18,16 @@ import { User } from '../../entities/user.entity.js';
 import { AuditService } from '../audit/audit.service.js';
 import { JobQueueService } from '../jobs/job-queue.service.js';
 import { UsersService } from '../users/users.service.js';
-import { INVITE_PATH, INVITE_TTL_HOURS } from './invitation.constants.js';
+import {
+  INVITE_PATH,
+  INVITE_TTL_HOURS,
+  PASSWORD_RESET_TTL_MINUTES,
+} from './invitation.constants.js';
 
 @Injectable()
 export class InvitationsService {
+  private readonly logger = new Logger(InvitationsService.name);
+
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
     private readonly usersService: UsersService,
@@ -28,19 +35,50 @@ export class InvitationsService {
     private readonly audit: AuditService,
   ) {}
 
-  // Each call replaces the stored token, so only the latest link works.
   async send(user: Pick<User, 'id' | 'email' | 'firstName'>): Promise<void> {
-    const token = generateToken();
-    await this.users.update(user.id, {
-      inviteTokenHash: hashToken(token),
-      inviteExpiresAt: new Date(Date.now() + INVITE_TTL_HOURS * 3_600_000),
-    });
+    const url = await this.issueLink(user.id, INVITE_TTL_HOURS * 60);
     await this.jobs.publish('mail.send-invite', {
       to: user.email,
       firstName: user.firstName,
-      url: `${env.APP_URL}${INVITE_PATH}?token=${token}`,
+      url,
       expiresInHours: INVITE_TTL_HOURS,
     });
+  }
+
+  // Not awaited, and silent about unknown emails: neither the answer nor the
+  // time it takes may reveal whether an account exists.
+  requestPasswordReset(email: string): void {
+    this.sendPasswordReset(email).catch((error: unknown) => {
+      this.logger.error(
+        `Password reset was not sent: ${(error as Error).message}`,
+      );
+    });
+  }
+
+  async sendPasswordReset(email: string): Promise<void> {
+    const user = await this.usersService.findByEmailWithPassword(email);
+    if (!user) return;
+    // Never set a password: the invitation is the right email, and it lasts longer.
+    if (!user.password) return this.send(user);
+
+    const url = await this.issueLink(user.id, PASSWORD_RESET_TTL_MINUTES);
+    await this.jobs.publish('mail.send-password-reset', {
+      to: user.email,
+      firstName: user.firstName,
+      url,
+      expiresInMinutes: PASSWORD_RESET_TTL_MINUTES,
+    });
+  }
+
+  // One token column for both emails: each call replaces the stored token, so
+  // only the latest link of either kind works.
+  private async issueLink(userId: number, ttlMinutes: number): Promise<string> {
+    const token = generateToken();
+    await this.users.update(userId, {
+      inviteTokenHash: hashToken(token),
+      inviteExpiresAt: new Date(Date.now() + ttlMinutes * 60_000),
+    });
+    return `${env.APP_URL}${INVITE_PATH}?token=${token}`;
   }
 
   // Invited but has not set a password yet.
@@ -56,8 +94,9 @@ export class InvitationsService {
     await this.send(target);
   }
 
-  // Opening the emailed link proves the user owns the address, so this also
-  // verifies the email.
+  // Sets the password from an invitation or a password reset link. Opening the
+  // emailed link proves the user owns the address, so this also verifies the
+  // email, and it signs out every session (a reset is often after a leak).
   async accept(token: string, password: string): Promise<void> {
     const valid = {
       inviteTokenHash: hashToken(token),
@@ -65,7 +104,13 @@ export class InvitationsService {
     };
     const user = await this.users.findOne({
       where: valid,
-      select: { id: true, firstName: true, lastName: true },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        password: true,
+        emailVerifiedAt: true,
+      },
       loadEagerRelations: false,
     });
     if (!user) {
@@ -74,7 +119,7 @@ export class InvitationsService {
     assertPasswordAvoidsNames(password, [user.firstName, user.lastName]);
 
     const passwordHash = await hashSecret(password);
-    const emailVerifiedAt = new Date();
+    const emailVerifiedAt = user.emailVerifiedAt ?? new Date();
     await this.users.manager.transaction(async (manager) => {
       // Conditional UPDATE: concurrent requests cannot both use the link. The
       // audit subscriber cannot see such an update, so the entry is explicit.
@@ -85,6 +130,7 @@ export class InvitationsService {
           password: passwordHash,
           inviteTokenHash: null,
           inviteExpiresAt: null,
+          refreshTokenHash: null,
           emailVerifiedAt,
         },
       );
@@ -96,12 +142,15 @@ export class InvitationsService {
           action: 'update',
           entityType: 'User',
           entityId: String(user.id),
-          oldValues: { password: null, emailVerifiedAt: null },
+          oldValues: {
+            password: user.password ?? null,
+            emailVerifiedAt: user.emailVerifiedAt?.toISOString() ?? null,
+          },
           newValues: {
             password: passwordHash,
             emailVerifiedAt: emailVerifiedAt.toISOString(),
           },
-          // No session yet: the invited user acts on their own account.
+          // No session: the user acts on their own account through the link.
           actorId: user.id,
         },
         manager,

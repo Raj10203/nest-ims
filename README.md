@@ -86,7 +86,15 @@ sequenceDiagram
 - `POST /api/users/:id/invitation` (anyone who may update the user) sends a new link and invalidates the old one; it returns 409 once the user has a password. Setting a password through `PATCH /api/users/:id` also cancels a pending link. Changing the email cancels the link sent to the old address in the same update and emits `user.email-changed`; if the user is still pending, the listener sends a new link to the corrected address.
 - `UsersModule` does not know about invitations: it only emits `user.created` and `user.email-changed`, and `InvitationsModule` (which imports `UsersModule`) listens. The listener runs asynchronously and logs instead of throwing, so a broker outage never fails user creation; the admin resends.
 
-### 1.3.2 Optional MFA (emailed sign-in code)
+### 1.3.2 Forgot password
+
+- `POST /api/auth/forgot-password { email }` (public, 5 per minute per IP) always answers **202** with the same message. The work runs after the response, so neither the answer nor its timing tells whether an account uses that email; failures are logged.
+- A user with a password gets a "Reset your IMS password" email with a link to the **same** `<APP_URL>/set-password?token=...` page, valid **60 minutes, once**. A user still waiting on an invitation gets the invitation again instead (72 hours).
+- Both links share the invitation's token columns (`inviteTokenHash`, `inviteExpiresAt`), so only the latest link of either kind works, and both are accepted by `POST /api/invitations/accept`.
+- Accepting a link also **signs out every session** (clears `refreshTokenHash`), since a reset often follows a leaked password. It keeps an existing `emailVerifiedAt` and sets it otherwise.
+- There is no per-account cooldown beyond the IP rate limit, so many IPs could fill one inbox with reset emails; add one if that becomes a problem.
+
+### 1.3.3 Optional MFA (emailed sign-in code)
 
 - A user turns it on or off for themselves with `PUT /api/auth/me/mfa { enabled, password }`; the password is asked again so a stolen access token alone cannot disable it.
 - With MFA on, `POST /api/auth/login` answers `{ mfaRequired: true, challengeToken, expiresInMinutes }` instead of tokens and emails a 6-digit code (works once). Codes share one 10-minute window per user with 5 attempts in total: logging in again inside the window sends a new code but neither resets the attempts nor extends the window, so knowing the password does not buy fresh guesses. Once they are used up, login and code checks answer 429 "try again in N minutes". `POST /api/auth/login/mfa { challengeToken, otp }` returns the usual `{ user, accessToken, refreshToken }`.
@@ -259,18 +267,18 @@ Every create, update and delete of an entity is recorded in `audit_logs`: who (`
 
 All routes are under `/api`, except `GET /health`, `GET /health/live` and the docs (`/docs`). Every route accepts `?lang=` / `Accept-Language`.
 
-| Area        | Routes                                                                                                                                                                                     |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Auth        | `POST /auth/login`, `/auth/login/mfa`, `/auth/refresh`, `/auth/logout`, `GET /auth/me`, `PUT /auth/me/mfa`, `POST /auth/email-otp/send`, `/auth/email-otp/verify`                          |
-| Invitations | `POST /invitations/accept` (public), `POST /users/:id/invitation` (resend)                                                                                                                 |
-| Users       | `POST/GET /users` (body needs `siteId`), `GET/PATCH/DELETE /users/:id`, `PUT /users/:id/feature-roles`, `PUT /users/:id/avatar` (multipart `file`, max 500 KB), `DELETE /users/:id/avatar` |
-| Sites       | `POST/GET /sites`, `GET/PATCH/DELETE /sites/:id` (body accepts `inchargeId`)                                                                                                               |
-| Categories  | `POST/GET /categories` (`?search=&isActive=`), `GET/PATCH/DELETE /categories/:id`                                                                                                          |
-| Products    | `POST/GET /products` (`?search=&categoryId=&type=&measureType=&isActive=`), `GET /products/options`, `GET/PATCH/DELETE /products/:id`                                                      |
-| Items       | `POST /items/bulk`, `POST/GET /items` (`?search=&productId=&categoryId=&siteId=&status=`), `GET /items/stock`, `GET/PATCH/DELETE /items/:id`, `GET /items/:id/movements`                   |
-| Roles       | `GET /roles` (primary), `GET /roles/features`                                                                                                                                              |
-| Audit       | `GET /audit-logs` (super admin, admin)                                                                                                                                                     |
-| Health      | `GET /health`, `GET /health/live` (no prefix)                                                                                                                                              |
+| Area        | Routes                                                                                                                                                                                              |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Auth        | `POST /auth/login`, `/auth/login/mfa`, `/auth/refresh`, `/auth/logout`, `/auth/forgot-password` (public), `GET /auth/me`, `PUT /auth/me/mfa`, `POST /auth/email-otp/send`, `/auth/email-otp/verify` |
+| Invitations | `POST /invitations/accept` (public; invitation and password reset links), `POST /users/:id/invitation` (resend)                                                                                     |
+| Users       | `POST/GET /users` (body needs `siteId`), `GET/PATCH/DELETE /users/:id`, `PUT /users/:id/feature-roles`, `PUT /users/:id/avatar` (multipart `file`, max 500 KB), `DELETE /users/:id/avatar`          |
+| Sites       | `POST/GET /sites`, `GET/PATCH/DELETE /sites/:id` (body accepts `inchargeId`)                                                                                                                        |
+| Categories  | `POST/GET /categories` (`?search=&isActive=`), `GET/PATCH/DELETE /categories/:id`                                                                                                                   |
+| Products    | `POST/GET /products` (`?search=&categoryId=&type=&measureType=&isActive=`), `GET /products/options`, `GET/PATCH/DELETE /products/:id`                                                               |
+| Items       | `POST /items/bulk`, `POST/GET /items` (`?search=&productId=&categoryId=&siteId=&status=`), `GET /items/stock`, `GET/PATCH/DELETE /items/:id`, `GET /items/:id/movements`                            |
+| Roles       | `GET /roles` (primary), `GET /roles/features`                                                                                                                                                       |
+| Audit       | `GET /audit-logs` (super admin, admin)                                                                                                                                                              |
+| Health      | `GET /health`, `GET /health/live` (no prefix)                                                                                                                                                       |
 
 ---
 

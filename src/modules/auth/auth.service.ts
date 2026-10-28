@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService, JwtSignOptions } from '@nestjs/jwt';
 import { env } from '../../config/env.js';
@@ -79,10 +80,15 @@ export class AuthService {
         secret: env.JWT_ACCESS_SECRET,
         expiresIn: env.JWT_ACCESS_EXPIRES_IN as JwtSignOptions['expiresIn'],
       }),
-      this.jwt.signAsync(payload, {
-        secret: env.JWT_REFRESH_SECRET,
-        expiresIn: env.JWT_REFRESH_EXPIRES_IN as JwtSignOptions['expiresIn'],
-      }),
+      // jti: iat has whole seconds, so without it a refresh in the same second
+      // as the login re-issued the very same token and the "used" one still worked.
+      this.jwt.signAsync(
+        { ...payload, jti: randomUUID() },
+        {
+          secret: env.JWT_REFRESH_SECRET,
+          expiresIn: env.JWT_REFRESH_EXPIRES_IN as JwtSignOptions['expiresIn'],
+        },
+      ),
     ]);
     await this.users.setRefreshTokenHash(
       userId,

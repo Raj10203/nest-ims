@@ -105,6 +105,7 @@ export type I18nTranslations = {
         "mfaCodeSent": string;
         "mfaEnabled": string;
         "mfaDisabled": string;
+        "passwordResetQueued": string;
     };
 };
 /* prettier-ignore */

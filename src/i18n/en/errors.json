@@ -74,7 +74,7 @@
     "invalidImage": "The image is damaged, contains extra data, or is larger than {maxPx} × {maxPx} pixels"
   },
   "invite": {
-    "invalid": "This invitation link is invalid, already used or expired",
+    "invalid": "This link is invalid, already used or expired",
     "alreadyAccepted": "This user has already set a password"
   },
   "mfa": {

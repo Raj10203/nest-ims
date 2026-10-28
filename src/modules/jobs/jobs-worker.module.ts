@@ -4,6 +4,7 @@ import { MailModule } from '../mail/mail.module.js';
 import { SendEmailOtpHandler } from '../mail/send-email-otp.handler.js';
 import { SendInviteHandler } from '../mail/send-invite.handler.js';
 import { SendLoginOtpHandler } from '../mail/send-login-otp.handler.js';
+import { SendPasswordResetHandler } from '../mail/send-password-reset.handler.js';
 import { JOB_HANDLERS } from './jobs.constants.js';
 import { JobWorker } from './job-worker.service.js';
 import { JobsModule } from './jobs.module.js';
@@ -27,7 +28,12 @@ import { JobsModule } from './jobs.module.js';
     {
       provide: JOB_HANDLERS,
       useFactory: (...handlers: unknown[]) => handlers,
-      inject: [SendEmailOtpHandler, SendInviteHandler, SendLoginOtpHandler],
+      inject: [
+        SendEmailOtpHandler,
+        SendInviteHandler,
+        SendLoginOtpHandler,
+        SendPasswordResetHandler,
+      ],
     },
   ],
 })
