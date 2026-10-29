@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ErrorKey } from '../../../common/i18n/i18n-message.js';
 
 const transport = {
   vehicleNumber: z.string().trim().min(1).max(20).toUpperCase().nullish(),
@@ -6,7 +7,10 @@ const transport = {
   driverPhone: z
     .string()
     .trim()
-    .regex(/^\+?[0-9 -]{6,20}$/)
+    .regex(
+      /^\+?[0-9 -]{6,20}$/,
+      'errors.shipments.phoneFormat' satisfies ErrorKey,
+    )
     .nullish(),
   note: z.string().trim().min(1).max(1000).nullish(),
 };

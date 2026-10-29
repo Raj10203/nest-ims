@@ -55,4 +55,20 @@ describe('depthOne', () => {
     });
     expect((select as any).incharge).not.toHaveProperty('email');
   });
+
+  it('shows other related records as a summary, never their full row', () => {
+    const { select } = depthOne(dataSource.getRepository(User));
+    expect((select as any).site).toEqual({
+      id: true,
+      name: true,
+      code: true,
+      type: true,
+    });
+    expect((select as any).role).toEqual({
+      id: true,
+      name: true,
+      kind: true,
+      level: true,
+    });
+  });
 });

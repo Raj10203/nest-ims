@@ -42,7 +42,8 @@
     "hqMissing": "The headquarters site is not set up; run the seed command",
     "hasUsers": "Users still belong to this site; move them to another site first",
     "hasInventory": "This site has stock or stock history and cannot be deleted",
-    "inchargeInactive": "User {id} is deactivated"
+    "inchargeInactive": "User {id} is deactivated",
+    "hasStockRequests": "This site has stock requests and cannot be deleted; deactivate it instead"
   },
   "categories": {
     "notFound": "Category {id} not found",
@@ -121,7 +122,8 @@
     "notDispatched": "Only a dispatched shipment can be closed",
     "finished": "This shipment is closed or cancelled",
     "noPackages": "Add at least one package before dispatch",
-    "emptyPackage": "Package {id} has no items"
+    "emptyPackage": "Package {id} has no items",
+    "phoneFormat": "Enter a phone number of 6 to 20 digits, spaces or dashes, optionally starting with +"
   },
   "packages": {
     "notFound": "Package {id} not found",
@@ -136,7 +138,8 @@
     "itemNotInPackage": "Item {itemId} is not in this package",
     "notInTransit": "This package is not waiting to be received",
     "codeNotInPackage": "Item {code} is not waiting in this package",
-    "itemsChanged": "Some of these items changed meanwhile; reload and try again"
+    "itemsChanged": "Some of these items changed meanwhile; reload and try again",
+    "requestInShipment": "Stock request {id} already has a package in this shipment"
   },
   "notifications": {
     "notFound": "Notification {id} not found"

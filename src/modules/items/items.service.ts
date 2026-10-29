@@ -273,7 +273,9 @@ export class ItemsService {
       .getRawMany<Record<string, unknown>>();
     const totalRow = await this.stockQuery(query)
       .select(
-        'COUNT(DISTINCT item.productId, item.siteId, item.status)',
+        // COALESCE: COUNT(DISTINCT a, b) skips rows where any is NULL, and an
+        // item on a shipment has no site.
+        'COUNT(DISTINCT item.productId, COALESCE(item.siteId, 0), item.status)',
         'total',
       )
       .getRawOne<{ total: string }>();

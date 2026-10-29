@@ -6,6 +6,15 @@ import type {
   ObjectLiteral,
   Repository,
 } from 'typeorm';
+import { Category } from '../../entities/category.entity.js';
+import { Item } from '../../entities/item.entity.js';
+import { Package } from '../../entities/package.entity.js';
+import { Product } from '../../entities/product.entity.js';
+import { Role } from '../../entities/role.entity.js';
+import { Shipment } from '../../entities/shipment.entity.js';
+import { Site } from '../../entities/site.entity.js';
+import { StockRequestLine } from '../../entities/stock-request-line.entity.js';
+import { StockRequest } from '../../entities/stock-request.entity.js';
 import { User } from '../../entities/user.entity.js';
 
 export interface DepthOneOptions<T> {
@@ -14,11 +23,31 @@ export interface DepthOneOptions<T> {
   loadEagerRelations: false;
 }
 
-// A related user (createdBy, incharge, ...) is shown as a summary: the email and
-// account status stay behind the users read scope, which returns 404 outside it.
+// A related record is a summary: what a screen shows for the link (a name, a
+// code, a status); its full record is one request away. A related user's
+// email and account status also stay behind the users read scope, which
+// returns 404 outside it. An entity missing here comes with all its columns.
 const SUMMARY_COLUMNS = new Map<unknown, readonly string[]>([
   [User, ['id', 'firstName', 'middleName', 'lastName', 'avatarUrl']],
+  [Role, ['id', 'name', 'kind', 'level']],
+  [Site, ['id', 'name', 'code', 'type']],
+  [Category, ['id', 'name']],
+  [
+    Product,
+    ['id', 'name', 'prefix', 'type', 'measureType', 'packSize', 'packUnit'],
+  ],
+  [Item, ['id', 'code', 'productId', 'status']],
+  [StockRequest, ['id', 'siteId', 'status']],
+  [StockRequestLine, ['id', 'productId']],
+  [Shipment, ['id', 'status']],
+  [Package, ['id', 'shipmentId', 'status']],
 ]);
+
+// The select for a relation loaded by hand, shown as depthOne would show it.
+export const summaryOf = (entity: unknown) =>
+  Object.fromEntries(
+    (SUMMARY_COLUMNS.get(entity) ?? []).map((name) => [name, true]),
+  ) as Record<string, true>;
 
 const selectable = (metadata: EntityMetadata) =>
   metadata.columns

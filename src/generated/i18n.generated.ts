@@ -50,6 +50,7 @@ export type I18nTranslations = {
             "hasUsers": string;
             "hasInventory": string;
             "inchargeInactive": string;
+            "hasStockRequests": string;
         };
         "categories": {
             "notFound": string;
@@ -129,6 +130,7 @@ export type I18nTranslations = {
             "finished": string;
             "noPackages": string;
             "emptyPackage": string;
+            "phoneFormat": string;
         };
         "packages": {
             "notFound": string;
@@ -144,6 +146,7 @@ export type I18nTranslations = {
             "notInTransit": string;
             "codeNotInPackage": string;
             "itemsChanged": string;
+            "requestInShipment": string;
         };
         "notifications": {
             "notFound": string;

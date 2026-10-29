@@ -2,6 +2,7 @@ import { subject } from '@casl/ability';
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -19,6 +20,7 @@ import {
   depthOne,
   depthOneWithout,
   findPageDepthOne,
+  summaryOf,
 } from '../../common/typeorm/depth-one.js';
 import { Item } from '../../entities/item.entity.js';
 import { PackageItem } from '../../entities/package-item.entity.js';
@@ -275,6 +277,13 @@ export class ShipmentsService {
         );
       }
       this.assertDeliverable(request);
+      if (
+        await manager.existsBy(Package, { shipmentId, requestId: request.id })
+      ) {
+        throw new ConflictException(
+          i18nMessage('errors.packages.requestInShipment', { id: request.id }),
+        );
+      }
       const lines = await manager.find(StockRequestLine, {
         where: { requestId: request.id },
         loadEagerRelations: false,
@@ -337,15 +346,29 @@ export class ShipmentsService {
   async findPackage(actor: User, id: number) {
     const ability = this.abilityFactory.createForUser(actor);
     const pkg = await this.findReadablePackage(ability, id);
+    // One level deeper than depthOne for the product name each item needs.
     const items = await this.packageItems.find({
-      ...depthOneWithout(this.packageItems, 'package'),
+      select: {
+        id: true,
+        status: true,
+        receivedAt: true,
+        item: {
+          id: true,
+          code: true,
+          product: { id: true, name: true, prefix: true },
+        },
+        receivedBy: summaryOf(User),
+      },
+      relations: { item: { product: true }, receivedBy: true },
       where: { packageId: id },
       order: { id: 'ASC' },
+      loadEagerRelations: false,
     });
     return Object.assign(pkg, {
       items,
       allowed: {
         receive:
+          pkg.shipment.status === ShipmentStatus.DISPATCHED &&
           ON_THE_ROAD.includes(pkg.status) &&
           ability.can('receive', subject('Package', pkg)),
       },
@@ -470,14 +493,24 @@ export class ShipmentsService {
 
   // Any employee of the destination site. Without codes the whole package;
   // with codes only those items, and the package stays partially received.
+  // Read may reach further than receive (an HQ shipment manager reads every
+  // package), so receive is checked on the package itself.
   async receive(actor: User, id: number, { codes }: ReceivePackageDto) {
     const ability = this.abilityFactory.createForUser(actor);
-    const { shipmentId } = await this.findReadablePackage(ability, id);
+    const found = await this.findReadablePackage(ability, id);
+    if (!ability.can('receive', subject('Package', found))) {
+      throw new ForbiddenException(i18nMessage('errors.forbidden'));
+    }
+    const { shipmentId } = found;
     await this.dataSource.transaction(async (manager) => {
-      await this.lockShipment(manager, shipmentId);
+      const shipment = await this.lockShipment(manager, shipmentId);
       const pkg = await this.lockPackage(manager, id);
       const requests = await this.lockRequests(manager, [pkg.requestId]);
-      if (!ON_THE_ROAD.includes(pkg.status)) {
+      // Once the shipment is closed, what was not received is missing.
+      if (
+        shipment.status !== ShipmentStatus.DISPATCHED ||
+        !ON_THE_ROAD.includes(pkg.status)
+      ) {
         throw new ConflictException(
           i18nMessage('errors.packages.notInTransit'),
         );
@@ -551,6 +584,7 @@ export class ShipmentsService {
 
   // Closes a dispatched shipment: items still on the road become missing and
   // keep the shipment as their location; their requests can be packed again.
+  // A partially received package keeps that status: some of it did arrive.
   private async finish(
     manager: EntityManager,
     actor: User,
