@@ -4,6 +4,7 @@ import { ItemStatus } from '../common/enums/item-status.enum.js';
 import { MovementAction } from '../common/enums/movement-action.enum.js';
 import { BaseEntity } from './base.entity.js';
 import { Item } from './item.entity.js';
+import { Shipment } from './shipment.entity.js';
 import { Site } from './site.entity.js';
 import { User } from './user.entity.js';
 
@@ -22,13 +23,22 @@ export class ItemMovement extends BaseEntity {
   @Column({ type: 'varchar', length: 30 })
   action: MovementAction;
 
-  // Where it happened. RESTRICT: a site with inventory history is never deleted.
+  // Where it happened; for a receipt or a loss on the road, the destination.
+  // RESTRICT: a site with inventory history is never deleted.
   @ManyToOne(() => Site, { nullable: false, onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'siteId' })
   site: Site;
 
   @Column({ type: 'int' })
   siteId: number;
+
+  // Movements of a shipment: packing, dispatch, receipt, going missing.
+  @ManyToOne(() => Shipment, { nullable: true, onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'shipmentId' })
+  shipment: Shipment | null;
+
+  @Column({ type: 'int', nullable: true })
+  shipmentId: number | null;
 
   // The item's status after this movement.
   @Column({ type: 'varchar', length: 20 })

@@ -2,6 +2,7 @@ import { forwardRef, Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ItemMovement } from '../../entities/item-movement.entity.js';
 import { Site } from '../../entities/site.entity.js';
+import { StockRequest } from '../../entities/stock-request.entity.js';
 import { User } from '../../entities/user.entity.js';
 import { AuthorizationModule } from '../authorization/authorization.module.js';
 import { UsersModule } from '../users/users.module.js';
@@ -10,7 +11,7 @@ import { SitesService } from './sites.service.js';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Site, User, ItemMovement]),
+    TypeOrmModule.forFeature([Site, User, ItemMovement, StockRequest]),
     AuthorizationModule,
     forwardRef(() => UsersModule),
   ],

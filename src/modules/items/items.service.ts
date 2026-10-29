@@ -30,6 +30,7 @@ import { AddStockDto } from './dto/add-stock.dto.js';
 import { CreateItemDto, UpdateItemDto } from './dto/create-item.dto.js';
 import {
   ListItemsQueryDto,
+  MovementsQueryDto,
   PageQueryDto,
   StockQueryDto,
 } from './dto/list-items-query.dto.js';
@@ -229,6 +230,28 @@ export class ItemsService {
     return { items, total, page, limit };
   }
 
+  // The item (its code starts with the product prefix) is the depth-one
+  // relation; filter by product through it.
+  async findAllMovements({
+    siteId,
+    productId,
+    action,
+    page,
+    limit,
+  }: MovementsQueryDto) {
+    const [items, total] = await findPageDepthOne(this.movements, {
+      where: {
+        ...(siteId && { siteId }),
+        ...(action && { action }),
+        ...(productId && { item: { productId } }),
+      },
+      order: { id: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+    return { items, total, page, limit };
+  }
+
   async stock(query: StockQueryDto) {
     const { page, limit } = query;
     const rows = await this.stockQuery(query)
@@ -250,7 +273,9 @@ export class ItemsService {
       .getRawMany<Record<string, unknown>>();
     const totalRow = await this.stockQuery(query)
       .select(
-        'COUNT(DISTINCT item.productId, item.siteId, item.status)',
+        // COALESCE: COUNT(DISTINCT a, b) skips rows where any is NULL, and an
+        // item on a shipment has no site.
+        'COUNT(DISTINCT item.productId, COALESCE(item.siteId, 0), item.status)',
         'total',
       )
       .getRawOne<{ total: string }>();
@@ -264,6 +289,10 @@ export class ItemsService {
 
   async update(actor: User, id: number, dto: UpdateItemDto): Promise<Item> {
     const item = await this.findOneOrFail(id);
+    const { siteId } = item;
+    if (siteId === null) {
+      throw new ConflictException(i18nMessage('errors.items.onShipment'));
+    }
     assertItemRules(item.product.type, dto);
     await this.dataSource.transaction(async (manager) => {
       if (dto.serialNumber && dto.serialNumber !== item.serialNumber) {
@@ -278,7 +307,7 @@ export class ItemsService {
         await manager.insert(ItemMovement, {
           itemId: id,
           action: MovementAction.CONDITION_CHANGED,
-          siteId: item.siteId,
+          siteId,
           status: item.status,
           conditionBefore: item.condition,
           conditionAfter: dto.condition,
@@ -295,7 +324,7 @@ export class ItemsService {
   async remove(id: number): Promise<void> {
     const item = await this.findOneOrFail(id);
     if (
-      item.site.type !== SiteType.HQ ||
+      item.site?.type !== SiteType.HQ ||
       item.status !== ItemStatus.AVAILABLE
     ) {
       throw new ConflictException(i18nMessage('errors.items.notDeletable'));
@@ -362,7 +391,8 @@ export class ItemsService {
     const query = this.items
       .createQueryBuilder('item')
       .innerJoin('item.product', 'product')
-      .innerJoin('item.site', 'site');
+      // Items on a shipment have no site: they count under site null.
+      .leftJoin('item.site', 'site');
     if (productId) query.andWhere('item.productId = :productId', { productId });
     if (categoryId) {
       query.andWhere('product.categoryId = :categoryId', { categoryId });

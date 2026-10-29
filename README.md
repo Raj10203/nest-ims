@@ -45,6 +45,9 @@ src/
     users/  sites/  roles/   feature modules (controller, service, dto, specs); users emit the user.created event
     categories/  products/   product catalog (CRUD); product-rules.ts holds the type/measure-type rules
     items/                   stock: one row per physical item, automatic codes, movements, stock counts
+    stock-requests/          sites ask HQ for stock: two-step review chain, quantities, comments, delivery status
+    shipments/               HQ packs approved requests into packages, dispatches them; sites receive
+    notifications/           per-user inbox and a server-sent events stream, fanned out across instances through RabbitMQ
     invitations/             invitation emails (listens to user.created), set-password link, resend
     jobs/                    RabbitMQ publisher, consumer, retry topology
     mail/                    dynamic module MailModule.forRoot(options): nodemailer + the "send email OTP" job handler
@@ -123,13 +126,13 @@ A user is **invited** until they set a first password, then **active**; an admin
 
 Five roles in a strict hierarchy:
 
-| Role              | Level | Notes                                          |
-| ----------------- | ----- | ---------------------------------------------- |
-| `super_admin`     | 100   | `manage all`; only role that can create admins |
-| `admin`           | 80    | manages all lower-level users                  |
-| `manager`         | 60    | manages users it created                       |
-| `site_incharge`   | 40    | manages users it created; reads the catalog    |
-| `site_technician` | 20    | read-only (itself and the catalog)             |
+| Role              | Level | Notes                                                                             |
+| ----------------- | ----- | --------------------------------------------------------------------------------- |
+| `super_admin`     | 100   | `manage all`; only role that can create admins                                    |
+| `admin`           | 80    | manages all lower-level users                                                     |
+| `manager`         | 60    | manages users it created                                                          |
+| `site_incharge`   | 40    | manages users it created; reads the catalog; asks HQ for stock; receives packages |
+| `site_technician` | 20    | reads itself and the catalog; asks HQ for stock; receives packages                |
 
 - A user can only manage users with a **strictly lower level**; everyone except `admin` can only manage accounts they created.
 - **Permissions are data, scoping is code.** `src/database/seeds/role-permissions.ts` is the single source of truth for `(action, subject)` pairs and is synced into the DB by the seed command. `CaslAbilityFactory` adds the hierarchy and ownership conditions.
@@ -139,7 +142,7 @@ Five roles in a strict hierarchy:
 
 A user has **one primary role** (the table above) and **any number of feature roles**, which only add permissions: a promoted site employee keeps the same account, moves to the HQ site and gets `stock_manager`.
 
-- Stored in the same `roles` table with `kind = 'feature'` (level 0, no part in the hierarchy); their permissions come from `FEATURE_ROLE_PERMISSIONS` in `role-permissions.ts` and are seeded like the others. Today: `stock_manager` (add, edit and delete items). `request_reviewer` and `shipment_manager` arrive with their features.
+- Stored in the same `roles` table with `kind = 'feature'` (level 0, no part in the hierarchy); their permissions come from `FEATURE_ROLE_PERMISSIONS` in `role-permissions.ts` and are seeded like the others. Today: `stock_manager` (add, edit and delete items), `stock_request_reviewer` (the HQ review step of stock requests, §1.6.3) and `shipment_manager` (packs and dispatches shipments, §1.6.4).
 - Grants are rows in `user_feature_roles` (with `grantedById`), so every grant and revoke is in the audit log.
 - `PUT /users/:id/feature-roles { roleIds }` replaces the set. It needs `assign FeatureRole` (super admin, admin, manager) **and** the usual rule for editing that user, so nobody can grant capabilities to themselves or to a higher role. `GET /roles/features` lists them; `GET /roles` stays primary-only.
 - `CaslAbilityFactory` merges the permissions of the primary role and every feature role. The auth guard reloads the user on every request, so a grant or revoke applies to the next request.
@@ -149,7 +152,7 @@ A user has **one primary role** (the table above) and **any number of feature ro
 - Sites are shared: any role with the `Site` permissions can act on every site.
 - **Headquarters** is a site with `type = 'hq'`. The seed command creates it (id 1, code `HQ`, Mahesana, Gujarat, 384002) when missing, and stops with an error if id 1 is already another site. Code finds it by type, never by id. It cannot be deleted.
 - **Every user belongs to one site** (`users.siteId`, required by the API; HQ staff have the HQ site). The column is nullable in the database for one release so the previous version keeps working during the deploy; the seed command moves users without a site to HQ.
-- A site with users, stock or stock history cannot be deleted (409).
+- A site with users, stock, stock history or stock requests cannot be deleted (409).
 - A site can have an **in-charge** (`inchargeId`, optional on create and update). The user must have the `site_incharge` role (400 otherwise) and be within the actor's user scope (404 otherwise).
 - A user who is still in charge of a site cannot be deleted, deactivated or moved out of the `site_incharge` role (409); assign another in-charge first. A deactivated user cannot become an in-charge (400).
 - This makes `UsersModule` and `SitesModule` depend on each other. The cycle is resolved with `forwardRef` in both modules and both constructors; in ESM the injected parameter is typed `Pick<OtherService, 'method'>` so decorator metadata does not read the class before the import cycle has loaded it.
@@ -172,27 +175,115 @@ The catalog describes _what_ can be stocked; stock units with their own ids, sta
 - Types and units are TypeScript enums stored as `varchar`, so adding a value needs no `ALTER TABLE`. `GET /products/options` returns the allowed values for dropdowns.
 - The field combinations are checked in `ProductsService` (`product-rules.ts`) on the record as it will be saved, so PATCH follows them too: switching a product from `bulk` to `single` must also send `packSize: null, packUnit: null`. Errors use the same 400 body as request validation (`errors[].path`).
 - Like sites, the catalog is shared: admin and manager have full CRUD, site in-charge and technician read only.
-- Once a product has items, `prefix`, `type`, `measureType`, `packSize` and `packUnit` are locked and the product cannot be deleted (409): codes are printed on stickers and a box of 20 stays a box of 20.
+- Once a product has items, `prefix`, `type`, `measureType`, `packSize` and `packUnit` are locked and the product cannot be deleted (409): codes are printed on stickers and a box of 20 stays a box of 20. A product that a stock request asks for cannot be deleted either (409); deactivate it instead.
 
 ### 1.6.2 Stock (items)
 
 The `items` table **is** the inventory: one row per physical unit (one drill, one jacket, one box of bolts). There is no quantity table; stock levels are counts over `items`, so there is a single source of truth.
 
-| Column                 | Meaning                                                                         |
-| ---------------------- | ------------------------------------------------------------------------------- |
-| `code`                 | unique, `<prefix>-<suffix>`, printed on the sticker (`DRL-000014`, `DRL-OLD17`) |
-| `productId`, `siteId`  | what it is and where it is now (always HQ until shipments arrive)               |
-| `status`               | `available` for now; requests, shipments and issue flows add their statuses     |
-| `condition`            | 0–100, starts at 100; `null` for consumables                                    |
-| `serialNumber`         | optional manufacturer serial, unique per product                                |
-| `nextCalibrationDueAt` | calibrated products only; defaults to today + the product's interval            |
+| Column                 | Meaning                                                                          |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| `code`                 | unique, `<prefix>-<suffix>`, printed on the sticker (`DRL-000014`, `DRL-OLD17`)  |
+| `productId`            | what it is                                                                       |
+| `siteId`, `shipmentId` | where it is: a site, or a shipment while on the road; exactly one is set (CHECK) |
+| `status`               | `available`, `packed`, `in_transit`, `missing`; issue flows add more             |
+| `condition`            | 0–100, starts at 100; `null` for consumables                                     |
+| `serialNumber`         | optional manufacturer serial, unique per product                                 |
+| `nextCalibrationDueAt` | calibrated products only; defaults to today + the product's interval             |
 
 - **Adding stock** (`stock_manager`): `POST /items/bulk { productId, quantity }` creates one item per unit at HQ with the next automatic codes (at most 10 000 per call, so a typo cannot hold the product's row lock for long); `POST /items` adds one item and may take a `codeSuffix` (capital letters and digits; the prefix is always the product's) and a serial number. Receipts and invoices come later.
 - **Automatic codes** come from `products.lastItemNumber`, raised inside a transaction that holds a row lock on that product (`SELECT … FOR UPDATE`). Concurrent adds of the same product queue for a few milliseconds and get separate number ranges; other products are not affected. A typed suffix that an automatic code could produce later (`000050`) moves the counter past it, so the two never collide. Numbers are never reused.
-- **History** is `item_movements`, append-only: one row per event (`added`, `condition_changed`; shipments and issues add more) with the site, status, condition before/after, note and who did it. It is the item's own audit trail, so the generic audit log skips it (`@NotAudited()` on the entity). A bulk add writes one audit entry for the whole range (`entityId` `DRL-000001..DRL-000500`) instead of one per item.
+- **History** is `item_movements`, append-only: one row per event (`added`, `condition_changed`, `packed`, `unpacked`, `dispatched`, `received`, `marked_missing`; issues add more) with the site, shipment, status, condition before/after, note and who did it. It is the item's own audit trail, so the generic audit log skips it (`@NotAudited()` on the entity). A bulk add writes one audit entry for the whole range (`entityId` `DRL-000001..DRL-000500`) instead of one per item.
 - An item can be deleted only to correct a wrong entry: while it is `available` at HQ. Its movements go with it.
-- `GET /items/stock` returns counts per product, site and status (filters: product, category, site, status): the stock dashboard.
+- `GET /items/stock` returns counts per product, site and status (filters: product, category, site, status): the stock dashboard. Items on a shipment count under site `null`.
+- An item on a shipment cannot be edited (409) until it is received.
 - Admin and manager can read items; only `stock_manager` (or super admin) changes them.
+- `GET /items/movements` lists every item's movements, newest first (filters: site, product, action), for the logistics screens.
+
+### 1.6.3 Stock requests (logistics)
+
+A site asks headquarters for stock with a **stock request**: a ticket with products and quantities, drafted by the site, then a two-step review chain and a conversation.
+
+| Table                    | Meaning                                                                                                                                                                                                               |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stock_requests`         | the requesting site, status, note, `neededBy`, who sent, reviewed, approved or closed it and when                                                                                                                     |
+| `stock_request_lines`    | one product per line: `requestedQuantity` (as asked, never changed), `quantity` (as the reviewers set it) and an optional `note`                                                                                      |
+| `stock_request_events`   | append-only history (`created`, `updated`, `submitted`, `quantity_changed`, `reviewed`, `approved`, `rejected`, `cancelled`, `dispatched`, `received`, `items_missing`, `closed`; delivery events carry `shipmentId`) |
+| `stock_request_comments` | the conversation; replies are one level deep (`parentId` is always a top comment)                                                                                                                                     |
+
+- **Drafting** (`POST /stock-requests { lines: [{ productId, quantity, note? }], note?, neededBy?, submit? }`, any site employee: `site_incharge` or `site_technician`): always for the caller's own site, so from HQ to that site, never from HQ itself (HQ supplies the stock); active products only, each once, 1–10 000 units per line. It starts as a `draft`, which every employee of the site sees and may change (`PATCH /:id`, the same body; the lines are replaced) or discard (`DELETE /:id`, 204). Nobody else sees a draft, HQ included: it answers 404 and lists leave it out.
+- **Sending** (`POST /:id/submit`, or `submit: true` on create or update): the draft goes to `pending_review` and **whoever sends it becomes the requester** (`requestedById`, `requestedAt`), for good. From then on the site can only read it and comment; the requester alone may cancel it and is the one notified of comments. The products are checked again, since one may have been deactivated since the draft was saved. Changing, sending or discarding anything but a draft answers 409.
+- **Review chain**: `pending_review` → (`stock_request_reviewer` at HQ) → `pending_approval` → (`manager`) → `approved`. One endpoint, `POST /stock-requests/:id/approve { lines?: [{ id, quantity }], note? }`, takes whichever step is due and may change line quantities on the way (0 leaves a product out, at least one must stay above 0); every change is a `quantity_changed` event. `POST /:id/reject { note }` ends it at either step. Nobody decides on their own request, and the reviewer cannot also give the final approval, so the two steps always need two people (403 otherwise). The request row is locked (`FOR UPDATE`) while a decision is saved, so two reviewers acting at once cannot both move it.
+- **Cancel** (`POST /:id/cancel`): the requester only, while it is pending (409 after). A draft is discarded instead.
+- **Who sees what**: site roles raise and read their own site's requests only (`CaslAbilityFactory` adds `{ siteId }` to the stock request permissions of primary roles below manager; `readableStockRequestsWhere` is the same rule for list queries, so keep them in sync). The reviewer feature role, manager, admin and super admin read every site's. Other sites' requests answer 404.
+- **Queues**: `GET /stock-requests?awaitingMe=true` lists what waits for the caller's step, oldest first (without their own requests, or the ones they reviewed themselves). Other filters: `status`, `siteId`, `mine`. Each list row carries `lineCount` and `totalQuantity`.
+- **Detail**: `GET /:id` returns the request with its lines (each with `received`, `inFlight` and `remaining`, counted from packages) and `allowed: { decide, edit, cancel, close }` for the caller, computed with the same rules as the endpoints. `GET /:id/events` and `GET /:id/comments` return the whole history and conversation, oldest first.
+- **Comments** (`POST /:id/comments { body, parentId? }`): anyone who can read the request, at any status. A reply to a reply joins the same top comment.
+- Events and comments are append-only (`@NotAudited()`); the request and its lines go through the audit log like any entity.
+- **Delivery status** follows from the received counts (`syncRequestStatus` in `request-progress.ts`, run under the request's row lock after every dispatch, receipt and shipment close): everything approved received → `fulfilled`; something received → `partially_fulfilled`; nothing received but a package on the road → `in_transit`; otherwise back to `approved` (everything sent went missing).
+- **Close** (`POST /:id/close { note }`, manager): ends delivery with what the site has. Each line's `quantity` drops to its received count (a `quantity_changed` event each), so the request becomes `fulfilled`, also when nothing was received at all (every line at 0). Refused (409) while a draft or dispatched shipment carries a package for it.
+
+### 1.6.4 Shipments
+
+HQ sends stock to sites in **shipments**. A shipment is one trip from HQ; it carries **packages**, and each package belongs to exactly one approved stock request, so to one site. A shipment can serve many requests, and a request can be spread over many shipments.
+
+| Table           | Meaning                                                                                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shipments`     | `draft` → `dispatched` → `closed` (or `cancelled` from draft); optional vehicle number, driver name and phone; who dispatched and closed it              |
+| `packages`      | the shipment, the request and its site (copied for scoping), `packing` → `in_transit` → `received` / `partially_received` / `missing`                    |
+| `package_items` | one row per item packed, with its request line and `packed` / `received` / `missing`; kept after delivery (`@NotAudited()`, item_movements is the trail) |
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  available --> packed: pack (draft)
+  packed --> available: unpack / remove package / cancel
+  packed --> in_transit: dispatch (location HQ → shipment)
+  in_transit --> available: receive (location shipment → site)
+  in_transit --> missing: close shipment by hand
+```
+
+- **Packing** (`shipment_manager`): `POST /shipments`, then `POST /shipments/:id/packages { requestId }` (the request must be `approved`, `in_transit` or `partially_fulfilled`, with something remaining, and has at most one package per shipment), then `POST /packages/:id/items { codes }`. Only items `available` at HQ, of a product the request asks for, and never more than a line's **remaining** (approved − received − packed or on the road; missing items count for neither, so they can be sent again). Unpack with `DELETE /packages/:id/items/:itemId`, drop a package with `DELETE /packages/:id`. Packages change only while the shipment is a draft.
+- **Dispatch** (`POST /shipments/:id/dispatch`): needs at least one package and no empty one. Every item moves from HQ to the shipment (`siteId` null, `shipmentId` set, `in_transit`), and each request's status is recalculated.
+- **Receiving** (`POST /packages/:id/receive { codes? }`): any employee of the destination site (`receive Package`, scoped to `{ siteId }` like stock requests), checked on the package itself: an HQ shipment manager reads every package but gets 403 for another site's. Only while the shipment is `dispatched` (409 after it closes). Without codes the whole package; with codes only those items, and the package stays `partially_received`. Items move to the site as `available`. When no package of the shipment is still on the road, the shipment closes itself.
+- **Close by hand** (`POST /shipments/:id/close { note }`): for packages that never arrive. Items still on the road become `missing` and keep the shipment as their location (a partially received package keeps that status); their requests get an `items_missing` event and can be packed again.
+- **Cancel** (`POST /shipments/:id/cancel`, draft only): its packages are deleted and their items unpacked.
+- **Who sees what**: `GET /shipments` and `GET /shipments/:id` for the shipment manager, manager, admin and super admin. `GET /packages` (`?status=&shipmentId=&requestId=&siteId=`) and `GET /packages/:id` (with its items and `allowed: { receive }`) for those and for site roles, who see only their own site's packages (`readablePackagesWhere`, same rule as the CASL condition).
+- **Concurrency**: every change locks the shipment row first, then the package, then the requests in id order, before any plain read (so reads are current, not an older snapshot). Item status changes are conditional updates (`WHERE status = <expected>`), so two packers can never take the same item; a mismatch answers 409. Each package's item moves write one audit entry (`entityId` `package:<id>`) next to the per-item movements.
+- Barcode or QR scanning will call the same endpoints with the scanned codes.
+
+### 1.6.5 Notifications (in-app, live)
+
+A user's inbox, pushed live to every open tab over server-sent events (SSE). For now one event creates one: a comment on a stock request notifies its requester (who sent it), unless they wrote it or are deactivated. A draft has no requester yet, so its comments notify nobody.
+
+```mermaid
+sequenceDiagram
+    participant A as Commenter
+    participant API1 as API instance 1
+    participant DB as MySQL
+    participant MQ as RabbitMQ (notifications exchange)
+    participant API2 as API instance 2
+    participant C as Creator's tabs
+    C->>API2: GET /notifications/stream (bearer)
+    API2->>MQ: bind user.<id> to this instance's queue
+    A->>API1: POST /stock-requests/:id/comments
+    API1->>DB: comment + notification, one transaction
+    API1->>MQ: publish once, routing key user.<id>
+    MQ->>API2: only instances holding one of the user's streams
+    API2->>C: event: notification
+```
+
+- **Table** `notifications` (`@NotAudited()`): `userId`, `type` (`<subject>.<event>`, `NotificationType`), `data` (JSON, its shape per type in `NotificationData`), `readAt`. The API stores no sentences: the UI writes them from `type` and `data`, in its own language. Names in `data` are a snapshot from when it happened.
+- **Created in the change's transaction** (`NotificationsService.create(manager, ...)`), pushed after the commit (`send`, best effort). A push that fails is only logged: the notification is stored, and the client gets it from the list or the stream replay.
+- **`stock_request.comment` data**: `{ requestId, commentId, parentId, excerpt, author, repliedTo }`. `author` and `repliedTo` are `{ id, firstName, lastName }`; `parentId` and `repliedTo` are set for a reply (the comment answered and its author).
+- **Endpoints** (the caller's own inbox only, so no permission): `GET /notifications` (`?unread=&page=&limit=`, newest first), `GET /notifications/unread-count`, `POST /notifications/:id/read` (404 if not yours), `POST /notifications/read-all`; both reads answer `{ unreadCount }`.
+- **Stream** (`GET /notifications/stream`, bearer like every route):
+  - `retry: 5000`, then, when the client sends `Last-Event-ID`, every `notification` it missed (at most 50), then `ready` `{ unreadCount, resync }`; `resync: true` means more were missed, reload the list.
+  - `notification` (with `id:`) `{ notification, unreadCount }` (replayed ones carry no `unreadCount`; `ready` follows them) and `read` `{ id, unreadCount }` (`id: null` after read-all), so every tab's badge agrees. Only `notification` events carry an id, which is what `Last-Event-ID` resumes from.
+  - A `: ping` comment every 25 s keeps proxies from closing an idle stream.
+  - It **ends when the access token expires**. EventSource reconnects and the new request passes `JwtAuthGuard` again, so a deactivated user or a revoked session is cut off within one access token lifetime.
+- **Optimizations**: one RabbitMQ message per notification, serialized once. Each API instance has one exclusive queue on the direct `notifications` exchange and binds `user.<id>` only while it holds one of that user's streams, so an event reaches only the instances that need it. Each instance keeps one heartbeat timer for all its streams. A client whose send buffer passes 64 KB is cut off instead of buffered for, and resumes from `Last-Event-ID`. A user has at most 5 streams per instance (the oldest is closed). On shutdown every stream is ended, so a deploy is not held up by open connections.
+- **Through next-ims**: the browser opens an `EventSource` on a next-ims Route Handler, which adds the bearer token from its cookies, forwards `Last-Event-ID` and pipes the stream through unbuffered. A proxy in front of the API must not buffer `text/event-stream` (`X-Accel-Buffering: no` is sent for nginx) and needs an idle timeout above 25 s.
 
 ### 1.7 Background jobs (RabbitMQ)
 
@@ -226,7 +317,7 @@ flowchart LR
 - **Security headers and CORS:** Helmet on every response (CSP without `upgrade-insecure-requests`, so the docs also load over plain http locally). CORS is off unless `CORS_ORIGINS` lists the allowed browser origins.
 - **Logging:** pino-http. Every line has method, url, status, time, `userId` and `role`. Bodies are logged only in development (or opt-in in production); any field named like password/secret/token/otp/hash/authorization is masked at any depth.
 - **Database:** `synchronize` is off. Every schema change is a reviewed migration and must stay backward compatible, because the old version keeps serving while the new schema is applied.
-- **Response depth:** API responses include an entity's direct (to-one) relations and stop there: a user comes with its `role` and `createdBy`, a site with its `createdBy` and `incharge`, but not the relations of those. A related user is only a summary (`id`, first, middle and last name): email and account status stay behind the users read scope, which answers 404 outside it. `depthOne(repository)` builds these find options from the entity metadata, so new entities follow the rule automatically. The internal user lookup for authorization keeps the full eager chain, because the permissions are needed there.
+- **Response depth:** API responses include an entity's direct (to-one) relations and stop there: a user comes with its `role` and `createdBy`, a site with its `createdBy` and `incharge`, but not the relations of those. Every related record is only a **summary**, what a screen shows for the link: a user's `id`, names and avatar (email and account status stay behind the users read scope, which answers 404 outside it); a site's `id`, `name`, `code`, `type`; a product's name, prefix and pack fields; a request, shipment, package or item by its id, code and status (`SUMMARY_COLUMNS`). The full record is one request away, so lists stay small. A screen that needs one more level asks for exactly those columns (a package's items come with their product's name). `depthOne(repository)` builds these find options from the entity metadata, so new entities follow the rule automatically. The internal user lookup for authorization keeps the full eager chain, because the permissions are needed there.
 - **Events (`@nestjs/event-emitter`):** in-process events decouple modules without import cycles: `UsersService` emits `user.created`, and the invitations listener reacts. Events are for side effects only; a listener must not throw, and anything that must not be lost goes through RabbitMQ (as the invitation mail does).
 - **Caching:** the roles list is cached in memory for an hour.
 - **Graceful shutdown:** `enableShutdownHooks()` so `docker stop` is instant instead of waiting for SIGKILL.
@@ -278,18 +369,22 @@ Every create, update and delete of an entity is recorded in `audit_logs`: who (`
 
 All routes are under `/api`, except `GET /health`, `GET /health/live` and the docs (`/docs`). Every route accepts `?lang=` / `Accept-Language`.
 
-| Area        | Routes                                                                                                                                                                                                                                                                                                                                                           |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Auth        | `POST /auth/login`, `/auth/login/mfa`, `/auth/refresh`, `/auth/logout`, `/auth/forgot-password` (public), `GET/PATCH /auth/me`, `PUT /auth/me/password`, `PUT /auth/me/mfa`, `POST /auth/email-otp/send`, `/auth/email-otp/verify`                                                                                                                               |
-| Invitations | `POST /invitations/accept` (public; invitation and password reset links), `POST /users/:id/invitation` (resend)                                                                                                                                                                                                                                                  |
-| Users       | `POST /users` (body needs `siteId`), `GET /users` (`?search=&roleId=&siteId=&status=`), `GET/PATCH /users/:id`, `DELETE /users/:id` (pending invitations only), `POST /users/:id/deactivate`, `/users/:id/reactivate`, `PUT /users/:id/role`, `PUT /users/:id/feature-roles`, `PUT /users/:id/avatar` (multipart `file`, max 500 KB), `DELETE /users/:id/avatar` |
-| Sites       | `POST/GET /sites` (`GET` takes `search`: name or code), `GET/PATCH/DELETE /sites/:id` (body accepts `inchargeId`)                                                                                                                                                                                                                                                |
-| Categories  | `POST/GET /categories` (`?search=&isActive=`), `GET/PATCH/DELETE /categories/:id`                                                                                                                                                                                                                                                                                |
-| Products    | `POST/GET /products` (`?search=&categoryId=&type=&measureType=&isActive=`), `GET /products/options`, `GET/PATCH/DELETE /products/:id`                                                                                                                                                                                                                            |
-| Items       | `POST /items/bulk`, `POST/GET /items` (`?search=&productId=&categoryId=&siteId=&status=`), `GET /items/stock`, `GET/PATCH/DELETE /items/:id`, `GET /items/:id/movements`                                                                                                                                                                                         |
-| Roles       | `GET /roles` (primary), `GET /roles/features`                                                                                                                                                                                                                                                                                                                    |
-| Audit       | `GET /audit-logs` (super admin, admin)                                                                                                                                                                                                                                                                                                                           |
-| Health      | `GET /health`, `GET /health/live` (no prefix)                                                                                                                                                                                                                                                                                                                    |
+| Area           | Routes                                                                                                                                                                                                                                                                                                                                                           |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Auth           | `POST /auth/login`, `/auth/login/mfa`, `/auth/refresh`, `/auth/logout`, `/auth/forgot-password` (public), `GET/PATCH /auth/me`, `PUT /auth/me/password`, `PUT /auth/me/mfa`, `POST /auth/email-otp/send`, `/auth/email-otp/verify`                                                                                                                               |
+| Invitations    | `POST /invitations/accept` (public; invitation and password reset links), `POST /users/:id/invitation` (resend)                                                                                                                                                                                                                                                  |
+| Users          | `POST /users` (body needs `siteId`), `GET /users` (`?search=&roleId=&siteId=&status=`), `GET/PATCH /users/:id`, `DELETE /users/:id` (pending invitations only), `POST /users/:id/deactivate`, `/users/:id/reactivate`, `PUT /users/:id/role`, `PUT /users/:id/feature-roles`, `PUT /users/:id/avatar` (multipart `file`, max 500 KB), `DELETE /users/:id/avatar` |
+| Sites          | `POST/GET /sites` (`GET` takes `search`: name or code), `GET/PATCH/DELETE /sites/:id` (body accepts `inchargeId`)                                                                                                                                                                                                                                                |
+| Categories     | `POST/GET /categories` (`?search=&isActive=`), `GET/PATCH/DELETE /categories/:id`                                                                                                                                                                                                                                                                                |
+| Products       | `POST/GET /products` (`?search=&categoryId=&type=&measureType=&isActive=`), `GET /products/options`, `GET/PATCH/DELETE /products/:id`                                                                                                                                                                                                                            |
+| Items          | `POST /items/bulk`, `POST/GET /items` (`?search=&productId=&categoryId=&siteId=&status=`), `GET /items/stock`, `GET /items/movements`, `GET/PATCH/DELETE /items/:id`, `GET /items/:id/movements`                                                                                                                                                                 |
+| Roles          | `GET /roles` (primary), `GET /roles/features`                                                                                                                                                                                                                                                                                                                    |
+| Stock requests | `POST/GET /stock-requests` (`?status=&siteId=&awaitingMe=&mine=`), `GET/PATCH/DELETE /stock-requests/:id`, `POST /stock-requests/:id/submit`, `GET /stock-requests/:id/events`, `GET/POST /stock-requests/:id/comments`, `POST /stock-requests/:id/approve`, `/reject`, `/cancel`, `/close`                                                                      |
+| Shipments      | `POST/GET /shipments` (`?status=`), `GET/PATCH /shipments/:id`, `POST /shipments/:id/packages`, `/dispatch`, `/cancel`, `/close`                                                                                                                                                                                                                                 |
+| Packages       | `GET /packages` (`?status=&shipmentId=&requestId=&siteId=`), `GET/DELETE /packages/:id`, `POST /packages/:id/items`, `DELETE /packages/:id/items/:itemId`, `POST /packages/:id/receive`                                                                                                                                                                          |
+| Notifications  | `GET /notifications` (`?unread=&page=&limit=`), `GET /notifications/unread-count`, `GET /notifications/stream` (server-sent events), `POST /notifications/:id/read`, `POST /notifications/read-all`                                                                                                                                                              |
+| Audit          | `GET /audit-logs` (super admin, admin)                                                                                                                                                                                                                                                                                                                           |
+| Health         | `GET /health`, `GET /health/live` (no prefix)                                                                                                                                                                                                                                                                                                                    |
 
 ---
 
@@ -433,13 +528,13 @@ sequenceDiagram
 
 **1. PR description (`describe` job in `.github/workflows/claude-code-review.yml`)**
 
-- Runs first on every push to a PR that is ready for review. Claude (Opus 5.5) reads the diff and writes the release-facing part of the description, for a product owner and whoever releases it, with no code details: **Summary**, **Business changes** (new, changed or removed features and rules, in plain words), **Schema changes** (a table per changed column: before, after, purpose, and whether it is safe while the old version runs) and **Release notes**. Release notes list only what this PR needs beyond the standard deploy (which always builds, runs migrations, restarts and checks health): the seed command when roles or permissions changed, new variables, third-party accounts or containers to create, a migration that is not backward compatible, one-off data fixes, or a frontend release to coordinate. Otherwise they say "Nothing beyond the standard deploy."
+- Runs first on every push to a PR that is ready for review. Claude (Opus 5.5) reads the diff and writes the release-facing part of the description, for a product owner and whoever releases it, with no code details: **Summary**, **Business changes** (new, changed or removed features and rules, in plain words), **Schema changes** (grouped by table, one line per changed column, index or constraint: before → after or the new definition, its purpose, and a warning when it is not safe while the old version runs) and **Release notes**. Release notes list only what this PR needs beyond the standard deploy (which always builds, runs migrations, restarts and checks health): the seed command when roles or permissions changed, new variables, third-party accounts or containers to create, a migration that is not backward compatible, one-off data fixes, or a frontend release to coordinate. Otherwise they say "Nothing beyond the standard deploy."
 - It only writes that block to a file; a script step swaps it into the description between `<!-- auto-description:start -->` and `<!-- auto-description:end -->`. Anything written outside the block is kept on every push; on the first run, an existing description moves below it under "Author notes". The job fails (a warning, not a merge block) if no block was produced for the head commit.
 
 **2. Pull request review (`.github/workflows/claude-code-review.yml`)**
 
 - Runs after the description job on every PR that is **ready for review** (not drafts), and again on every new push to that PR; a newer push cancels the run still in progress. It checks the description's schema changes and release notes against the diff: a missing PR-specific step (seed, variable, third-party setup, unsafe migration, data fix) is an Important finding.
-- Claude reads `CLAUDE.md` and the PR description, reviews the **whole diff**, traces **every caller of each changed method, helper, entity or response shape** (also in files the PR does not touch) to catch breakage in existing APIs, and posts one comment: issues bucketed as Critical / Important / Minor, merge notes (migrations, env vars, restarts) and a verdict (✅ mergeable, ⚠️ mergeable with fixes, ❌ not mergeable).
+- Claude reads `CLAUDE.md` and the PR description, reviews the **whole diff**, traces **every caller of each changed method, helper, entity or response shape** (also in files the PR does not touch) to catch breakage in existing APIs, and posts one comment: issues bucketed as Critical / Important / Minor, merge notes (migrations, env vars, restarts) and a verdict (✅ mergeable, ⚠️ mergeable with fixes, ❌ not mergeable). Once that comment is posted, the workflow hides the bot's earlier reviews on the PR as outdated (still one click away), so the latest review is the only one open; when a run posts nothing, the earlier ones stay visible.
 - It is **read-only** (no checkout, commit or edits) and tuned to avoid noise: "No issues found" is a normal result.
 - Runs on **Claude Opus 5.5** (up to 100 turns, 40-minute timeout) so large PRs get a full review; for big diffs it reads file by file and skips `package-lock.json` and generated files.
 - **Merge warning:** the job, shown as the **Claude review** check, passes only when the review of the head commit says ✅ **Mergeable** (risk low). It fails on ⚠️ **Mergeable with fixes** (risk medium), on ❌ **Not mergeable** (risk high), and when no review comment was posted at all (the action itself reports success either way). It is deliberately **not a required check**: a failing review shows a red check and "Some checks were not successful" on the PR, but developers can still merge. A "Show denied tool calls" step lists any command Claude tried that is not on the allowlist; the full transcript stays off because the repository is public.
@@ -481,32 +576,36 @@ sequenceDiagram
 
 ## 4. Design decisions at a glance
 
-| Decision                                                                | Why                                                                                                                                                                            |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Queue + separate worker for email                                       | Keeps API latency low, survives SMTP outages through retries                                                                                                                   |
-| Quorum queues, ack after handler                                        | No lost jobs on broker or worker restart (at-least-once, idempotent handlers)                                                                                                  |
-| Permissions in DB, scoping in code                                      | Change role capabilities with a seed; keep hierarchy rules type-checked and tested                                                                                             |
-| 404 instead of 403 for out-of-scope records                             | Does not reveal which ids exist                                                                                                                                                |
-| Hashed refresh tokens and OTPs                                          | A database leak does not expose usable credentials                                                                                                                             |
-| zod for env and requests                                                | One validation library; bad config fails at boot, not at runtime                                                                                                               |
-| Migrations only, backward compatible                                    | Zero-downtime deploys; old version keeps working during schema change                                                                                                          |
-| One image, many commands                                                | Same artifact for API, worker, migrations and seed; SHA-tagged for rollback                                                                                                    |
-| Docker-only development                                                 | Identical environment for everyone, one command to start                                                                                                                       |
-| `MailModule.forRoot(options)` dynamic module                            | Config is passed in by the caller, so the service never reads env and tests pass options directly                                                                              |
-| zod schema on the parameter (`@Body({ schema })`)                       | One schema validates the request and documents it in Swagger; examples are tested against it                                                                                   |
-| Translation keys in exceptions, translated in one filter                | Services stay language-agnostic and tests assert keys; adding a language is a folder of JSON files plus its zod locale                                                         |
-| Avatars in Azure Blob Storage, URL on the user                          | The API never serves image bytes; browsers and CDNs load them directly. Blob names are unique, so they are cached for a year and replacing an avatar never shows a stale image |
-| Avatars: size, type from bytes, then full content check; no re-encoding | Each layer stops a different attack (memory, renamed files, polyglots and bombs) while the client keeps control of the image it sends                                          |
-| Audit rows from a TypeORM subscriber, in the change's transaction       | Automatic for every entity, and a change can never be saved without its audit entry                                                                                            |
-| `/health` reports, `/health/live` is the probe                          | Ops see exactly which dependency is down; a dependency outage does not get the API container restarted                                                                         |
-| Invitation link instead of an emailed password                          | No password ever sits in a mailbox, a queue message or an admin's head; accepting the link also verifies the email                                                             |
-| `user.created` event for invitations                                    | Users stay unaware of invitations and mail; a failed send never fails user creation                                                                                            |
-| Deactivate instead of delete once a user has signed in                  | History (audit log, stock movements, sites) keeps pointing at a real person; access ends at once because the guard reloads the user on every request                           |
-| Deactivated answers 401, not 403                                        | Clients already treat 401 as a lost session and sign out; a 403 would be read as "verify your email"                                                                           |
-| Product type on the product, not the category                           | One category mixes kinds of item; categories stay plain grouping metadata                                                                                                      |
-| One measure type per product                                            | Stock ids are per piece or per pack, never per bolt; an item sold both ways is two products                                                                                    |
-| One row per physical item, no quantity table                            | Every bolt box and drill can be traced; stock counts cannot drift from the items they count                                                                                    |
-| Per-product counter under a row lock                                    | Codes are sequential, never duplicated or reused, without locking anything but that product                                                                                    |
-| Feature roles on top of one primary role                                | Capabilities follow the person, not the site or rank; granting one is a single call, not a new account                                                                         |
-| Lists counted without `select` (`findPageDepthOne`)                     | TypeORM 1.1 counts a selecting find with `COUNT(DISTINCT <all columns>)`, which MySQL makes skip rows with any NULL                                                            |
-| `forwardRef` between Users and Sites                                    | Each rule stays in the service that owns the data; new cycles should prefer a third module or a one-way call                                                                   |
+| Decision                                                                | Why                                                                                                                                                                                   |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Queue + separate worker for email                                       | Keeps API latency low, survives SMTP outages through retries                                                                                                                          |
+| Quorum queues, ack after handler                                        | No lost jobs on broker or worker restart (at-least-once, idempotent handlers)                                                                                                         |
+| Permissions in DB, scoping in code                                      | Change role capabilities with a seed; keep hierarchy rules type-checked and tested                                                                                                    |
+| 404 instead of 403 for out-of-scope records                             | Does not reveal which ids exist                                                                                                                                                       |
+| One approve endpoint for both review steps, two different people        | The client cannot skip or repeat a step: the request's status says which permission is needed, and the reviewer can never also approve                                                |
+| Hashed refresh tokens and OTPs                                          | A database leak does not expose usable credentials                                                                                                                                    |
+| zod for env and requests                                                | One validation library; bad config fails at boot, not at runtime                                                                                                                      |
+| Migrations only, backward compatible                                    | Zero-downtime deploys; old version keeps working during schema change                                                                                                                 |
+| One image, many commands                                                | Same artifact for API, worker, migrations and seed; SHA-tagged for rollback                                                                                                           |
+| Docker-only development                                                 | Identical environment for everyone, one command to start                                                                                                                              |
+| `MailModule.forRoot(options)` dynamic module                            | Config is passed in by the caller, so the service never reads env and tests pass options directly                                                                                     |
+| zod schema on the parameter (`@Body({ schema })`)                       | One schema validates the request and documents it in Swagger; examples are tested against it                                                                                          |
+| Translation keys in exceptions, translated in one filter                | Services stay language-agnostic and tests assert keys; adding a language is a folder of JSON files plus its zod locale                                                                |
+| Avatars in Azure Blob Storage, URL on the user                          | The API never serves image bytes; browsers and CDNs load them directly. Blob names are unique, so they are cached for a year and replacing an avatar never shows a stale image        |
+| Avatars: size, type from bytes, then full content check; no re-encoding | Each layer stops a different attack (memory, renamed files, polyglots and bombs) while the client keeps control of the image it sends                                                 |
+| Audit rows from a TypeORM subscriber, in the change's transaction       | Automatic for every entity, and a change can never be saved without its audit entry                                                                                                   |
+| `/health` reports, `/health/live` is the probe                          | Ops see exactly which dependency is down; a dependency outage does not get the API container restarted                                                                                |
+| Invitation link instead of an emailed password                          | No password ever sits in a mailbox, a queue message or an admin's head; accepting the link also verifies the email                                                                    |
+| `user.created` event for invitations                                    | Users stay unaware of invitations and mail; a failed send never fails user creation                                                                                                   |
+| Deactivate instead of delete once a user has signed in                  | History (audit log, stock movements, sites) keeps pointing at a real person; access ends at once because the guard reloads the user on every request                                  |
+| Deactivated answers 401, not 403                                        | Clients already treat 401 as a lost session and sign out; a 403 would be read as "verify your email"                                                                                  |
+| Product type on the product, not the category                           | One category mixes kinds of item; categories stay plain grouping metadata                                                                                                             |
+| One measure type per product                                            | Stock ids are per piece or per pack, never per bolt; an item sold both ways is two products                                                                                           |
+| One row per physical item, no quantity table                            | Every bolt box and drill can be traced; stock counts cannot drift from the items they count                                                                                           |
+| Item location is a site or a shipment, never neither                    | Goods on the road stay traceable, and a lost item stays pinned to the shipment it was lost from                                                                                       |
+| One package per request; request status from received counts            | Receiving needs no matching, and the status can never disagree with what the site actually holds                                                                                      |
+| Notifications over SSE, fanned out through RabbitMQ                     | Server to browser is all a notification needs; no third-party service, and RabbitMQ already runs. Per-user bindings send each event only to the instances holding that user's streams |
+| Per-product counter under a row lock                                    | Codes are sequential, never duplicated or reused, without locking anything but that product                                                                                           |
+| Feature roles on top of one primary role                                | Capabilities follow the person, not the site or rank; granting one is a single call, not a new account                                                                                |
+| Lists counted without `select` (`findPageDepthOne`)                     | TypeORM 1.1 counts a selecting find with `COUNT(DISTINCT <all columns>)`, which MySQL makes skip rows with any NULL                                                                   |
+| `forwardRef` between Users and Sites                                    | Each rule stays in the service that owns the data; new cycles should prefer a third module or a one-way call                                                                          |

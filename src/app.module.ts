@@ -19,8 +19,11 @@ import { CategoriesModule } from './modules/categories/categories.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { InvitationsModule } from './modules/invitations/invitations.module.js';
 import { ItemsModule } from './modules/items/items.module.js';
+import { NotificationsModule } from './modules/notifications/notifications.module.js';
+import { StockRequestsModule } from './modules/stock-requests/stock-requests.module.js';
 import { ProductsModule } from './modules/products/products.module.js';
 import { RolesModule } from './modules/roles/roles.module.js';
+import { ShipmentsModule } from './modules/shipments/shipments.module.js';
 import { SitesModule } from './modules/sites/sites.module.js';
 import { StorageModule } from './modules/storage/storage.module.js';
 import { UsersModule } from './modules/users/users.module.js';
@@ -59,6 +62,9 @@ import { UsersModule } from './modules/users/users.module.js';
     CategoriesModule,
     ProductsModule,
     ItemsModule,
+    StockRequestsModule,
+    ShipmentsModule,
+    NotificationsModule,
     AuthModule,
     InvitationsModule,
     HealthModule,

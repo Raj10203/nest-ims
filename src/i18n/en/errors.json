@@ -42,7 +42,8 @@
     "hqMissing": "The headquarters site is not set up; run the seed command",
     "hasUsers": "Users still belong to this site; move them to another site first",
     "hasInventory": "This site has stock or stock history and cannot be deleted",
-    "inchargeInactive": "User {id} is deactivated"
+    "inchargeInactive": "User {id} is deactivated",
+    "hasStockRequests": "This site has stock requests and cannot be deleted; deactivate it instead"
   },
   "categories": {
     "notFound": "Category {id} not found",
@@ -60,7 +61,8 @@
     "calibrationRequired": "A calibration interval is required for a calibrated product",
     "calibrationNotAllowed": "A calibration interval is only for calibrated products",
     "lockedByItems": "Prefix, type, measure type and pack details cannot change once the product has items",
-    "hasItems": "This product has items and cannot be deleted"
+    "hasItems": "This product has items and cannot be deleted",
+    "hasStockRequests": "This product is on stock requests and cannot be deleted; deactivate it instead"
   },
   "items": {
     "notFound": "Item {id} not found",
@@ -72,7 +74,8 @@
     "conditionNotAllowed": "Consumable items have no condition",
     "calibrationNotAllowed": "Only calibrated products have a calibration due date",
     "numbersExhausted": "This product has run out of automatic item numbers",
-    "notDeletable": "Only items available at the headquarters can be deleted"
+    "notDeletable": "Only items available at the headquarters can be deleted",
+    "onShipment": "This item is on a shipment; it can be edited once it is received"
   },
   "files": {
     "required": "A file is required",
@@ -94,5 +97,54 @@
     "digit": "The password needs at least one digit",
     "symbol": "The password needs at least one symbol (such as ! @ # $)",
     "containsName": "The password must not contain your first or last name"
+  },
+  "stockRequests": {
+    "notFound": "Stock request {id} not found",
+    "noSite": "Your account has no site, so you cannot raise a stock request",
+    "fromHeadquarters": "Headquarters supplies the stock; requests come from the other sites",
+    "productNotFound": "Product {id} does not exist",
+    "productInactive": "Product {id} is inactive",
+    "duplicateProduct": "Each product can be listed only once in a request",
+    "duplicateLine": "Each line can be listed only once",
+    "lineNotFound": "Line {id} is not part of this request",
+    "nothingApproved": "At least one product needs a quantity above 0",
+    "notPending": "This request is no longer waiting for a decision",
+    "notYourStep": "This step of the review is not yours to take",
+    "ownRequest": "You cannot approve or reject your own request",
+    "sameReviewer": "The final approval must come from someone other than the reviewer",
+    "notRequester": "Only the person who raised the request can cancel it",
+    "commentNotFound": "Comment {id} is not part of this request",
+    "notDeliverable": "Only an approved request that is not yet complete can be closed",
+    "shipmentOpen": "A shipment carrying this request is still open; dispatch and close it, or remove the package, first",
+    "notDraft": "Only a draft can be changed, sent or discarded",
+    "cannotEditDraft": "Your role cannot change this site's stock requests"
+  },
+  "shipments": {
+    "notFound": "Shipment {id} not found",
+    "notDraft": "Packages can change only while the shipment is a draft",
+    "notDispatched": "Only a dispatched shipment can be closed",
+    "finished": "This shipment is closed or cancelled",
+    "noPackages": "Add at least one package before dispatch",
+    "emptyPackage": "Package {id} has no items",
+    "phoneFormat": "Enter a phone number of 6 to 20 digits, spaces or dashes, optionally starting with +"
+  },
+  "packages": {
+    "notFound": "Package {id} not found",
+    "requestNotFound": "Stock request {id} not found",
+    "requestNotDeliverable": "Stock request {id} is not approved, or is already complete",
+    "nothingRemaining": "Everything approved on stock request {id} is already packed or received",
+    "itemNotFound": "No item has code {code}",
+    "itemNotAvailable": "Item {code} is not available at headquarters",
+    "productNotRequested": "Item {code} is not a product this request asks for",
+    "overRemaining": "Only {remaining} more of {product} can be packed for this request",
+    "duplicateCode": "Each item code can be listed only once",
+    "itemNotInPackage": "Item {itemId} is not in this package",
+    "notInTransit": "This package is not waiting to be received",
+    "codeNotInPackage": "Item {code} is not waiting in this package",
+    "itemsChanged": "Some of these items changed meanwhile; reload and try again",
+    "requestInShipment": "Stock request {id} already has a package in this shipment"
+  },
+  "notifications": {
+    "notFound": "Notification {id} not found"
   }
 }

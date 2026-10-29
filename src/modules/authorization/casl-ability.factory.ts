@@ -5,7 +5,11 @@ import {
 } from '@casl/ability';
 import { Injectable } from '@nestjs/common';
 import { FindOptionsWhere, LessThan } from 'typeorm';
-import { RoleName } from '../../common/enums/role-name.enum.js';
+import { RoleKind } from '../../common/enums/role-kind.enum.js';
+import { RoleName, ROLE_LEVELS } from '../../common/enums/role-name.enum.js';
+import { Package } from '../../entities/package.entity.js';
+import { Role } from '../../entities/role.entity.js';
+import { StockRequest } from '../../entities/stock-request.entity.js';
 import { User } from '../../entities/user.entity.js';
 
 export type AppAbility = MongoAbility;
@@ -35,6 +39,47 @@ export function readableUsersWhere(
   ];
 }
 
+const SITE_SUBJECTS = new Set(['StockRequest', 'Package']);
+
+// Primary roles below manager work for one site: their stock request and
+// package permissions only reach that site's records. Feature roles (the HQ
+// reviewer, the shipment manager) and higher roles reach every site.
+function siteScoped(role: Role, subject: string) {
+  return (
+    SITE_SUBJECTS.has(subject) &&
+    role.kind === RoleKind.PRIMARY &&
+    role.level < ROLE_LEVELS[RoleName.MANAGER]
+  );
+}
+
+// TypeORM equivalent of the 'read' rule of a site-scoped subject, for list
+// queries. Returns undefined when the actor may read every site's records.
+function readableBySiteWhere(
+  actor: User,
+  ability: AppAbility,
+  subject: string,
+): { siteId: number } | undefined {
+  const everySite = ability
+    .rulesFor('read', subject)
+    .some((rule) => !rule.inverted && !rule.conditions);
+  // -1 matches nothing: a user without a site sees no records.
+  return everySite ? undefined : { siteId: actor.siteId ?? -1 };
+}
+
+export function readableStockRequestsWhere(
+  actor: User,
+  ability: AppAbility,
+): FindOptionsWhere<StockRequest> | undefined {
+  return readableBySiteWhere(actor, ability, 'StockRequest');
+}
+
+export function readablePackagesWhere(
+  actor: User,
+  ability: AppAbility,
+): FindOptionsWhere<Package> | undefined {
+  return readableBySiteWhere(actor, ability, 'Package');
+}
+
 @Injectable()
 export class CaslAbilityFactory {
   // The roles' permissions come from the database (seeded); the hierarchy
@@ -46,7 +91,18 @@ export class CaslAbilityFactory {
       ...(actor.featureRoles ?? []).map((grant) => grant.role),
     ];
 
-    for (const { action, subject } of roles.flatMap((r) => r.permissions)) {
+    const grants = roles.flatMap((role) =>
+      role.permissions.map(({ action, subject }) => ({
+        role,
+        action,
+        subject,
+      })),
+    );
+    for (const { role, action, subject } of grants) {
+      if (siteScoped(role, subject)) {
+        can(action, subject, { siteId: actor.siteId });
+        continue;
+      }
       if (subject !== 'User') {
         can(action, subject);
         continue;

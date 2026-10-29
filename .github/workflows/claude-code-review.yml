@@ -61,20 +61,26 @@ jobs:
 
             ## Rules for what to declare (check every one against the diff)
             - Schema: read every migration added or changed in `src/database/migrations/`
-              (the `up` SQL is the truth) and the entity changes in `src/entities/`. One
-              table row per changed column, index, foreign key or constraint; a whole
-              table added or dropped is one row with column "(table)". "Before" and
-              "After" give the type and nullability/default in short form
-              (`varchar(1024), null`, `int, not null, FK → users`), or "—" when it did not
-              exist / no longer exists. For a modified column, "Before" is its definition
-              on the base branch: read it with
-              `git show origin/${{ github.event.pull_request.base.ref }}:<entity file>` or from the
-              earlier migration that created it, and "After" is the new one, e.g.
-              `varchar(255), not null` → `varchar(1024), not null`. "Purpose" says in
-              plain words what it stores. "Safe with old version": Yes for additive,
-              nullable or defaulted, and widened (longer varchar, bigger int) changes; No
-              for renamed, dropped or narrowed columns and new NOT NULL columns without a
-              default.
+              (the `up` SQL is the truth) and the entity changes in `src/entities/`. Group
+              by table: one bold line per table, then one bullet per changed column,
+              index, foreign key or constraint. For a new table, the bold line says
+              "new table" and its purpose, and it lists every column except `id`,
+              `createdAt` and `updatedAt`; for a dropped table, the bold line alone.
+              Each bullet is `name`: change: purpose.
+              - The change for a new column is `new, <definition>`; for a dropped one
+                `dropped (was <definition>)`; for a modified one
+                `<before>` → `<after>`. A definition is the type and
+                nullability/default in short form (`varchar(1024), null`,
+                `int, not null, FK → users`). Read a modified column's "before" on the
+                base branch with
+                `git show origin/${{ github.event.pull_request.base.ref }}:<entity file>` or in the
+                earlier migration that created it.
+              - The purpose says in plain words what it stores, or why it changed.
+              - Safe while the old version still runs: additive, nullable or defaulted,
+                and widened (longer varchar, bigger int) changes. Renamed, dropped or
+                narrowed columns and new NOT NULL columns without a default are not:
+                end that bullet with "**Not safe with the old version.**" (and add its
+                step to the release notes). Say nothing for safe changes.
 
             ## Release notes: only what THIS PR needs beyond the standard deploy
             Every deploy already builds the app, installs dependencies, runs pending
@@ -119,13 +125,23 @@ jobs:
 
             ## Schema changes
 
-            | Table | Column | Before | After | Purpose | Safe with old version |
-            | --- | --- | --- | --- | --- | --- |
-            | users | avatarUrl | — | varchar(1024), null | Link to the user's profile picture | Yes |
-            | sites | address | varchar(255), null | varchar(1024), null | Site's street address | Yes |
+            **users**
 
-            (These rows only show the format: a new column and a modified one. Write
-            "None." instead of the table when no migration changed.)
+            - `avatarUrl`: new, `varchar(1024), null`: link to the user's profile picture.
+            - `nickname`: dropped (was `varchar(50), null`): never shown anywhere. **Not safe with the old version.**
+
+            **sites**
+
+            - `address`: `varchar(255), null` → `varchar(1024), null`: longer street addresses did not fit.
+
+            **notifications** (new table): a user's inbox of in-app notifications.
+
+            - `userId`: new, `int, not null, FK → users (cascade)`: who receives it.
+            - `readAt`: new, `datetime, null`: when it was read; null while unread.
+            - index (`userId`, `readAt`): counts a user's unread notifications quickly.
+
+            (These lines only show the format. Write "None." instead when no migration
+            changed.)
 
             ## Release notes
 
@@ -295,7 +311,7 @@ jobs:
             Write the comment in Markdown to /tmp/review.md (never inside the repo), then
             post it as ONE new comment with
             `gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/review.md`.
-            Never edit or delete earlier comments. Use exactly this structure, with a blank
+            Never edit or delete earlier comments (the workflow hides older reviews itself). Use exactly this structure, with a blank
             line between every heading, paragraph and list:
 
             ## Claude review
@@ -353,6 +369,46 @@ jobs:
           jq -r '.[] | select(.type == "result") | .permission_denials[]?
             | "\(.tool_name): \(.tool_input.command // .tool_input.file_path // "")"' \
             "$EXECUTION_FILE" || true
+
+      # Only the latest review stays open: earlier ones are hidden as outdated (still
+      # one click away). Nothing is hidden when no review was posted for this commit.
+      - name: Hide earlier reviews
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          short="${SHA:0:7}"
+          gh api graphql -f owner="${GITHUB_REPOSITORY%/*}" -f repo="${GITHUB_REPOSITORY#*/}" -F pr="$PR" -f query='
+            query($owner: String!, $repo: String!, $pr: Int!) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $pr) {
+                  comments(last: 100) { nodes { id body isMinimized viewerDidAuthor } }
+                }
+              }
+            }' > /tmp/comments.json
+          # viewerDidAuthor: only this bot's reviews, never a person's comment.
+          ids=$(jq -r --arg marker "Reviewed commit \`$short\`" '
+            [.data.repository.pullRequest.comments.nodes[]
+              | select(.viewerDidAuthor and (.body | startswith("## Claude review")))] as $reviews
+            | ([$reviews[] | select(.body | contains($marker))] | last | .id) as $latest
+            | if $latest == null then empty
+              else $reviews[] | select(.isMinimized | not) | select(.id != $latest) | .id end
+          ' /tmp/comments.json)
+          if [ -z "$ids" ]; then
+            echo "Nothing to hide."
+            exit 0
+          fi
+          for id in $ids; do
+            gh api graphql -f id="$id" -f query='
+              mutation($id: ID!) {
+                minimizeComment(input: { subjectId: $id, classifier: OUTDATED }) {
+                  minimizedComment { isMinimized }
+                }
+              }' > /dev/null
+            echo "Hid $id as outdated"
+          done
 
       # Fails (a warning on the PR, not a merge block) unless the review for this
       # commit says ✅. The action itself reports success even when Claude posted nothing.

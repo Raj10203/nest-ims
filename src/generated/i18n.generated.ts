@@ -50,6 +50,7 @@ export type I18nTranslations = {
             "hasUsers": string;
             "hasInventory": string;
             "inchargeInactive": string;
+            "hasStockRequests": string;
         };
         "categories": {
             "notFound": string;
@@ -68,6 +69,7 @@ export type I18nTranslations = {
             "calibrationNotAllowed": string;
             "lockedByItems": string;
             "hasItems": string;
+            "hasStockRequests": string;
         };
         "items": {
             "notFound": string;
@@ -80,6 +82,7 @@ export type I18nTranslations = {
             "calibrationNotAllowed": string;
             "numbersExhausted": string;
             "notDeletable": string;
+            "onShipment": string;
         };
         "files": {
             "required": string;
@@ -101,6 +104,55 @@ export type I18nTranslations = {
             "digit": string;
             "symbol": string;
             "containsName": string;
+        };
+        "stockRequests": {
+            "notFound": string;
+            "noSite": string;
+            "fromHeadquarters": string;
+            "productNotFound": string;
+            "productInactive": string;
+            "duplicateProduct": string;
+            "duplicateLine": string;
+            "lineNotFound": string;
+            "nothingApproved": string;
+            "notPending": string;
+            "notYourStep": string;
+            "ownRequest": string;
+            "sameReviewer": string;
+            "notRequester": string;
+            "commentNotFound": string;
+            "notDeliverable": string;
+            "shipmentOpen": string;
+            "notDraft": string;
+            "cannotEditDraft": string;
+        };
+        "shipments": {
+            "notFound": string;
+            "notDraft": string;
+            "notDispatched": string;
+            "finished": string;
+            "noPackages": string;
+            "emptyPackage": string;
+            "phoneFormat": string;
+        };
+        "packages": {
+            "notFound": string;
+            "requestNotFound": string;
+            "requestNotDeliverable": string;
+            "nothingRemaining": string;
+            "itemNotFound": string;
+            "itemNotAvailable": string;
+            "productNotRequested": string;
+            "overRemaining": string;
+            "duplicateCode": string;
+            "itemNotInPackage": string;
+            "notInTransit": string;
+            "codeNotInPackage": string;
+            "itemsChanged": string;
+            "requestInShipment": string;
+        };
+        "notifications": {
+            "notFound": string;
         };
     };
     "messages": {

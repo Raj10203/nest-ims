@@ -12,6 +12,7 @@ import { RoleName } from '../../common/enums/role-name.enum.js';
 import { SiteType } from '../../common/enums/site-type.enum.js';
 import { ItemMovement } from '../../entities/item-movement.entity.js';
 import { Site } from '../../entities/site.entity.js';
+import { StockRequest } from '../../entities/stock-request.entity.js';
 import { User } from '../../entities/user.entity.js';
 import { UsersService } from '../users/users.service.js';
 import { CreateSiteDto } from './dto/create-site.dto.js';
@@ -30,6 +31,8 @@ export class SitesService {
     @InjectRepository(User) private readonly users: Repository<User>,
     @InjectRepository(ItemMovement)
     private readonly movements: Repository<ItemMovement>,
+    @InjectRepository(StockRequest)
+    private readonly requests: Repository<StockRequest>,
     @Inject(forwardRef(() => UsersService))
     // Pick, not UsersService: decorator metadata would read the class before
     // the Users <-> Sites import cycle has initialized it.
@@ -93,6 +96,10 @@ export class SitesService {
     }
     if (await this.movements.existsBy({ siteId: id })) {
       throw new ConflictException(i18nMessage('errors.sites.hasInventory'));
+    }
+    // Packages always belong to a request, so this covers them too.
+    if (await this.requests.existsBy({ siteId: id })) {
+      throw new ConflictException(i18nMessage('errors.sites.hasStockRequests'));
     }
     await this.sites.remove(site);
   }
