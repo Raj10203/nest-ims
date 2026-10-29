@@ -126,13 +126,13 @@ A user is **invited** until they set a first password, then **active**; an admin
 
 Five roles in a strict hierarchy:
 
-| Role              | Level | Notes                                           |
-| ----------------- | ----- | ----------------------------------------------- |
-| `super_admin`     | 100   | `manage all`; only role that can create admins  |
-| `admin`           | 80    | manages all lower-level users                   |
-| `manager`         | 60    | manages users it created                        |
-| `site_incharge`   | 40    | manages users it created; reads the catalog     |
-| `site_technician` | 20    | reads itself and the catalog; receives packages |
+| Role              | Level | Notes                                                                             |
+| ----------------- | ----- | --------------------------------------------------------------------------------- |
+| `super_admin`     | 100   | `manage all`; only role that can create admins                                    |
+| `admin`           | 80    | manages all lower-level users                                                     |
+| `manager`         | 60    | manages users it created                                                          |
+| `site_incharge`   | 40    | manages users it created; reads the catalog; asks HQ for stock; receives packages |
+| `site_technician` | 20    | reads itself and the catalog; asks HQ for stock; receives packages                |
 
 - A user can only manage users with a **strictly lower level**; everyone except `admin` can only manage accounts they created.
 - **Permissions are data, scoping is code.** `src/database/seeds/role-permissions.ts` is the single source of truth for `(action, subject)` pairs and is synced into the DB by the seed command. `CaslAbilityFactory` adds the hierarchy and ownership conditions.
@@ -175,7 +175,7 @@ The catalog describes _what_ can be stocked; stock units with their own ids, sta
 - Types and units are TypeScript enums stored as `varchar`, so adding a value needs no `ALTER TABLE`. `GET /products/options` returns the allowed values for dropdowns.
 - The field combinations are checked in `ProductsService` (`product-rules.ts`) on the record as it will be saved, so PATCH follows them too: switching a product from `bulk` to `single` must also send `packSize: null, packUnit: null`. Errors use the same 400 body as request validation (`errors[].path`).
 - Like sites, the catalog is shared: admin and manager have full CRUD, site in-charge and technician read only.
-- Once a product has items, `prefix`, `type`, `measureType`, `packSize` and `packUnit` are locked and the product cannot be deleted (409): codes are printed on stickers and a box of 20 stays a box of 20.
+- Once a product has items, `prefix`, `type`, `measureType`, `packSize` and `packUnit` are locked and the product cannot be deleted (409): codes are printed on stickers and a box of 20 stays a box of 20. A product that a stock request asks for cannot be deleted either (409); deactivate it instead.
 
 ### 1.6.2 Stock (items)
 
@@ -202,21 +202,22 @@ The `items` table **is** the inventory: one row per physical unit (one drill, on
 
 ### 1.6.3 Stock requests (logistics)
 
-A site asks headquarters for stock with a **stock request**: a ticket with products and quantities, a two-step review chain and a conversation.
+A site asks headquarters for stock with a **stock request**: a ticket with products and quantities, drafted by the site, then a two-step review chain and a conversation.
 
-| Table                    | Meaning                                                                                                                                                                                       |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `stock_requests`         | the requesting site, status, note, `neededBy`, who raised, reviewed, approved or closed it and when                                                                                           |
-| `stock_request_lines`    | one product per line: `requestedQuantity` (as asked, never changed) and `quantity` (as the reviewers set it)                                                                                  |
-| `stock_request_events`   | append-only history (`created`, `quantity_changed`, `reviewed`, `approved`, `rejected`, `cancelled`, `dispatched`, `received`, `items_missing`, `closed`; delivery events carry `shipmentId`) |
-| `stock_request_comments` | the conversation; replies are one level deep (`parentId` is always a top comment)                                                                                                             |
+| Table                    | Meaning                                                                                                                                                                                                               |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stock_requests`         | the requesting site, status, note, `neededBy`, who sent, reviewed, approved or closed it and when                                                                                                                     |
+| `stock_request_lines`    | one product per line: `requestedQuantity` (as asked, never changed), `quantity` (as the reviewers set it) and an optional `note`                                                                                      |
+| `stock_request_events`   | append-only history (`created`, `updated`, `submitted`, `quantity_changed`, `reviewed`, `approved`, `rejected`, `cancelled`, `dispatched`, `received`, `items_missing`, `closed`; delivery events carry `shipmentId`) |
+| `stock_request_comments` | the conversation; replies are one level deep (`parentId` is always a top comment)                                                                                                                                     |
 
-- **Raising** (`POST /stock-requests { lines: [{ productId, quantity }], note?, neededBy? }`, `site_incharge`): always for the requester's own site, never from HQ (HQ supplies the stock); active products only, each once, 1–10 000 units per line.
+- **Drafting** (`POST /stock-requests { lines: [{ productId, quantity, note? }], note?, neededBy?, submit? }`, any site employee: `site_incharge` or `site_technician`): always for the caller's own site, so from HQ to that site, never from HQ itself (HQ supplies the stock); active products only, each once, 1–10 000 units per line. It starts as a `draft`, which every employee of the site sees and may change (`PATCH /:id`, the same body; the lines are replaced) or discard (`DELETE /:id`, 204). Nobody else sees a draft, HQ included: it answers 404 and lists leave it out.
+- **Sending** (`POST /:id/submit`, or `submit: true` on create or update): the draft goes to `pending_review` and **whoever sends it becomes the requester** (`requestedById`, `requestedAt`), for good. From then on the site can only read it and comment; the requester alone may cancel it and is the one notified of comments. The products are checked again, since one may have been deactivated since the draft was saved. Changing, sending or discarding anything but a draft answers 409.
 - **Review chain**: `pending_review` → (`stock_request_reviewer` at HQ) → `pending_approval` → (`manager`) → `approved`. One endpoint, `POST /stock-requests/:id/approve { lines?: [{ id, quantity }], note? }`, takes whichever step is due and may change line quantities on the way (0 leaves a product out, at least one must stay above 0); every change is a `quantity_changed` event. `POST /:id/reject { note }` ends it at either step. Nobody decides on their own request, and the reviewer cannot also give the final approval, so the two steps always need two people (403 otherwise). The request row is locked (`FOR UPDATE`) while a decision is saved, so two reviewers acting at once cannot both move it.
-- **Cancel** (`POST /:id/cancel`): the requester only, while it is pending (409 after).
-- **Who sees what**: `site_incharge` raises and reads its own site's requests only (`CaslAbilityFactory` adds `{ siteId }` to the stock request permissions of primary roles below manager; `readableStockRequestsWhere` is the same rule for list queries, so keep them in sync). The reviewer feature role, manager, admin and super admin read every site's. Other sites' requests answer 404.
+- **Cancel** (`POST /:id/cancel`): the requester only, while it is pending (409 after). A draft is discarded instead.
+- **Who sees what**: site roles raise and read their own site's requests only (`CaslAbilityFactory` adds `{ siteId }` to the stock request permissions of primary roles below manager; `readableStockRequestsWhere` is the same rule for list queries, so keep them in sync). The reviewer feature role, manager, admin and super admin read every site's. Other sites' requests answer 404.
 - **Queues**: `GET /stock-requests?awaitingMe=true` lists what waits for the caller's step, oldest first (without their own requests, or the ones they reviewed themselves). Other filters: `status`, `siteId`, `mine`. Each list row carries `lineCount` and `totalQuantity`.
-- **Detail**: `GET /:id` returns the request with its lines (each with `received`, `inFlight` and `remaining`, counted from packages) and `allowed: { decide, cancel, close }` for the caller, computed with the same rules as the endpoints. `GET /:id/events` and `GET /:id/comments` return the whole history and conversation, oldest first.
+- **Detail**: `GET /:id` returns the request with its lines (each with `received`, `inFlight` and `remaining`, counted from packages) and `allowed: { decide, edit, cancel, close }` for the caller, computed with the same rules as the endpoints. `GET /:id/events` and `GET /:id/comments` return the whole history and conversation, oldest first.
 - **Comments** (`POST /:id/comments { body, parentId? }`): anyone who can read the request, at any status. A reply to a reply joins the same top comment.
 - Events and comments are append-only (`@NotAudited()`); the request and its lines go through the audit log like any entity.
 - **Delivery status** follows from the received counts (`syncRequestStatus` in `request-progress.ts`, run under the request's row lock after every dispatch, receipt and shipment close): everything approved received → `fulfilled`; something received → `partially_fulfilled`; nothing received but a package on the road → `in_transit`; otherwise back to `approved` (everything sent went missing).
@@ -253,7 +254,7 @@ stateDiagram-v2
 
 ### 1.6.5 Notifications (in-app, live)
 
-A user's inbox, pushed live to every open tab over server-sent events (SSE). For now one event creates one: a comment on a stock request notifies the request's creator, unless they wrote it or are deactivated.
+A user's inbox, pushed live to every open tab over server-sent events (SSE). For now one event creates one: a comment on a stock request notifies its requester (who sent it), unless they wrote it or are deactivated. A draft has no requester yet, so its comments notify nobody.
 
 ```mermaid
 sequenceDiagram
@@ -378,7 +379,7 @@ All routes are under `/api`, except `GET /health`, `GET /health/live` and the do
 | Products       | `POST/GET /products` (`?search=&categoryId=&type=&measureType=&isActive=`), `GET /products/options`, `GET/PATCH/DELETE /products/:id`                                                                                                                                                                                                                            |
 | Items          | `POST /items/bulk`, `POST/GET /items` (`?search=&productId=&categoryId=&siteId=&status=`), `GET /items/stock`, `GET /items/movements`, `GET/PATCH/DELETE /items/:id`, `GET /items/:id/movements`                                                                                                                                                                 |
 | Roles          | `GET /roles` (primary), `GET /roles/features`                                                                                                                                                                                                                                                                                                                    |
-| Stock requests | `POST/GET /stock-requests` (`?status=&siteId=&awaitingMe=&mine=`), `GET /stock-requests/:id`, `GET /stock-requests/:id/events`, `GET/POST /stock-requests/:id/comments`, `POST /stock-requests/:id/approve`, `/reject`, `/cancel`, `/close`                                                                                                                      |
+| Stock requests | `POST/GET /stock-requests` (`?status=&siteId=&awaitingMe=&mine=`), `GET/PATCH/DELETE /stock-requests/:id`, `POST /stock-requests/:id/submit`, `GET /stock-requests/:id/events`, `GET/POST /stock-requests/:id/comments`, `POST /stock-requests/:id/approve`, `/reject`, `/cancel`, `/close`                                                                      |
 | Shipments      | `POST/GET /shipments` (`?status=`), `GET/PATCH /shipments/:id`, `POST /shipments/:id/packages`, `/dispatch`, `/cancel`, `/close`                                                                                                                                                                                                                                 |
 | Packages       | `GET /packages` (`?status=&shipmentId=&requestId=&siteId=`), `GET/DELETE /packages/:id`, `POST /packages/:id/items`, `DELETE /packages/:id/items/:itemId`, `POST /packages/:id/receive`                                                                                                                                                                          |
 | Notifications  | `GET /notifications` (`?unread=&page=&limit=`), `GET /notifications/unread-count`, `GET /notifications/stream` (server-sent events), `POST /notifications/:id/read`, `POST /notifications/read-all`                                                                                                                                                              |

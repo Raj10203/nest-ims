@@ -69,6 +69,7 @@ export type I18nTranslations = {
             "calibrationNotAllowed": string;
             "lockedByItems": string;
             "hasItems": string;
+            "hasStockRequests": string;
         };
         "items": {
             "notFound": string;
@@ -122,6 +123,8 @@ export type I18nTranslations = {
             "commentNotFound": string;
             "notDeliverable": string;
             "shipmentOpen": string;
+            "notDraft": string;
+            "cannotEditDraft": string;
         };
         "shipments": {
             "notFound": string;

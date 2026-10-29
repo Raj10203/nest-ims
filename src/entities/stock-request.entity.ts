@@ -26,12 +26,17 @@ export class StockRequest extends BaseEntity {
   @Column({ type: 'date', nullable: true })
   neededBy: string | null;
 
+  // Who sent it to HQ, null while a draft: any employee of the site may edit
+  // a draft, but the sender alone owns the request (cancel, notifications).
   @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'requestedById' })
   requestedBy: User | null;
 
   @Column({ type: 'int', nullable: true })
   requestedById: number | null;
+
+  @Column({ type: 'datetime', nullable: true })
+  requestedAt: Date | null;
 
   // First step: the HQ stock request reviewer.
   @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })

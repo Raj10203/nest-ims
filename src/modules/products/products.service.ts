@@ -15,6 +15,7 @@ import { containsPattern } from '../../common/typeorm/like-pattern.js';
 import { Category } from '../../entities/category.entity.js';
 import { Item } from '../../entities/item.entity.js';
 import { Product } from '../../entities/product.entity.js';
+import { StockRequestLine } from '../../entities/stock-request-line.entity.js';
 import { User } from '../../entities/user.entity.js';
 import { CreateProductDto } from './dto/create-product.dto.js';
 import { ListProductsQueryDto } from './dto/list-products-query.dto.js';
@@ -39,6 +40,8 @@ export class ProductsService {
     @InjectRepository(Category)
     private readonly categories: Repository<Category>,
     @InjectRepository(Item) private readonly items: Repository<Item>,
+    @InjectRepository(StockRequestLine)
+    private readonly requestLines: Repository<StockRequestLine>,
   ) {}
 
   async create(actor: User, dto: CreateProductDto): Promise<Product> {
@@ -142,6 +145,12 @@ export class ProductsService {
     const product = await this.findOneOrFail(id);
     if (await this.items.existsBy({ productId: id })) {
       throw new ConflictException(i18nMessage('errors.products.hasItems'));
+    }
+    // Request events name a product only through a line, so lines cover them.
+    if (await this.requestLines.existsBy({ productId: id })) {
+      throw new ConflictException(
+        i18nMessage('errors.products.hasStockRequests'),
+      );
     }
     await this.products.remove(product);
   }

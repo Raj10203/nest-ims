@@ -61,7 +61,8 @@
     "calibrationRequired": "A calibration interval is required for a calibrated product",
     "calibrationNotAllowed": "A calibration interval is only for calibrated products",
     "lockedByItems": "Prefix, type, measure type and pack details cannot change once the product has items",
-    "hasItems": "This product has items and cannot be deleted"
+    "hasItems": "This product has items and cannot be deleted",
+    "hasStockRequests": "This product is on stock requests and cannot be deleted; deactivate it instead"
   },
   "items": {
     "notFound": "Item {id} not found",
@@ -114,7 +115,9 @@
     "notRequester": "Only the person who raised the request can cancel it",
     "commentNotFound": "Comment {id} is not part of this request",
     "notDeliverable": "Only an approved request that is not yet complete can be closed",
-    "shipmentOpen": "A shipment carrying this request is still open; dispatch and close it, or remove the package, first"
+    "shipmentOpen": "A shipment carrying this request is still open; dispatch and close it, or remove the package, first",
+    "notDraft": "Only a draft can be changed, sent or discarded",
+    "cannotEditDraft": "Your role cannot change this site's stock requests"
   },
   "shipments": {
     "notFound": "Shipment {id} not found",

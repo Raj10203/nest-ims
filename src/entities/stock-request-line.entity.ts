@@ -28,4 +28,7 @@ export class StockRequestLine extends BaseEntity {
   // As the reviewers set it; 0 leaves the product out.
   @Column({ type: 'int', unsigned: true })
   quantity: number;
+
+  @Column({ type: 'varchar', length: 1000, nullable: true })
+  note: string | null;
 }

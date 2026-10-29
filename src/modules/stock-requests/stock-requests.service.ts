@@ -43,7 +43,10 @@ import {
 } from '../authorization/casl-ability.factory.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { CreateCommentDto } from './dto/create-comment.dto.js';
-import { CreateStockRequestDto } from './dto/create-stock-request.dto.js';
+import {
+  CreateStockRequestDto,
+  UpdateStockRequestDto,
+} from './dto/create-stock-request.dto.js';
 import {
   ApproveStockRequestDto,
   CancelStockRequestDto,
@@ -72,6 +75,26 @@ const PENDING = [
 
 const notMe = (id: number) => Or(Not(id), IsNull());
 
+// Drafts stay with their site until sent: nobody elsewhere, not even HQ,
+// lists them (findReadable is the same rule for one request).
+function withoutOthersDrafts(
+  actor: User,
+  where: FindOptionsWhere<StockRequest>,
+  status: StockRequestStatus | undefined,
+): FindOptionsWhere<StockRequest>[] {
+  if (status && status !== StockRequestStatus.DRAFT) {
+    return [{ ...where, status }];
+  }
+  const ownSite = actor.siteId ?? -1;
+  const drafts =
+    where.siteId === undefined || where.siteId === ownSite
+      ? [{ ...where, status: StockRequestStatus.DRAFT, siteId: ownSite }]
+      : [];
+  return status
+    ? drafts
+    : [{ ...where, status: Not(StockRequestStatus.DRAFT) }, ...drafts];
+}
+
 const personSummary = ({
   id,
   firstName,
@@ -98,8 +121,8 @@ export class StockRequestsService {
     private readonly notifications: NotificationsService,
   ) {}
 
-  // Always for the requester's own site, which must not be headquarters:
-  // headquarters is where the stock comes from.
+  // Always for the actor's own site, which must not be headquarters:
+  // headquarters is where the stock comes from. A draft unless dto.submit.
   async create(actor: User, dto: CreateStockRequestDto) {
     const id = await this.dataSource.transaction(async (manager) => {
       const site = actor.siteId
@@ -127,32 +150,86 @@ export class StockRequestsService {
         StockRequest,
         manager.create(StockRequest, {
           siteId: site.id,
-          status: StockRequestStatus.PENDING_REVIEW,
+          status: StockRequestStatus.DRAFT,
           note: dto.note ?? null,
           neededBy: dto.neededBy ?? null,
-          requestedById: actor.id,
         }),
       );
-      await manager.save(
-        StockRequestLine,
-        dto.lines.map((line) =>
-          manager.create(StockRequestLine, {
-            requestId: request.id,
-            productId: line.productId,
-            requestedQuantity: line.quantity,
-            quantity: line.quantity,
-          }),
-        ),
-      );
+      await this.saveLines(manager, request.id, dto.lines);
       await manager.insert(StockRequestEvent, {
         requestId: request.id,
         action: StockRequestAction.CREATED,
         status: request.status,
         performedById: actor.id,
       });
+      if (dto.submit) await this.send(manager, actor, request.id);
       return request.id;
     });
     return this.findOne(actor, id);
+  }
+
+  // A draft is saved whole, by any employee of its site.
+  async update(actor: User, id: number, dto: UpdateStockRequestDto) {
+    const ability = this.abilityFactory.createForUser(actor);
+    await this.dataSource.transaction(async (manager) => {
+      const request = await this.lockReadable(manager, actor, ability, id);
+      this.assertCanEditDraft(ability, request);
+      await this.assertProductsActive(
+        manager,
+        dto.lines.map((line) => line.productId),
+      );
+      await manager.save(StockRequest, {
+        id,
+        note: dto.note ?? null,
+        neededBy: dto.neededBy ?? null,
+      });
+      // A draft has no packages yet, so its lines can simply be replaced.
+      await manager.remove(
+        StockRequestLine,
+        await manager.find(StockRequestLine, {
+          where: { requestId: id },
+          loadEagerRelations: false,
+        }),
+      );
+      await this.saveLines(manager, id, dto.lines);
+      await manager.insert(StockRequestEvent, {
+        requestId: id,
+        action: StockRequestAction.UPDATED,
+        status: request.status,
+        performedById: actor.id,
+      });
+      if (dto.submit) await this.send(manager, actor, id);
+    });
+    return this.findOne(actor, id);
+  }
+
+  // Sends a draft to HQ review. Whoever sends it becomes its requester.
+  async submit(actor: User, id: number) {
+    const ability = this.abilityFactory.createForUser(actor);
+    await this.dataSource.transaction(async (manager) => {
+      const request = await this.lockReadable(manager, actor, ability, id);
+      this.assertCanEditDraft(ability, request);
+      await this.send(manager, actor, id);
+    });
+    return this.findOne(actor, id);
+  }
+
+  // Discards a draft. A sent request is cancelled instead, so its trail stays.
+  async remove(actor: User, id: number) {
+    const ability = this.abilityFactory.createForUser(actor);
+    await this.dataSource.transaction(async (manager) => {
+      const request = await this.lockReadable(manager, actor, ability, id);
+      this.assertCanEditDraft(ability, request);
+      await manager.remove(
+        StockRequestLine,
+        await manager.find(StockRequestLine, {
+          where: { requestId: id },
+          loadEagerRelations: false,
+        }),
+      );
+      // Events and comments go with it (ON DELETE CASCADE).
+      await manager.remove(StockRequest, request);
+    });
   }
 
   async findAll(
@@ -173,14 +250,16 @@ export class StockRequestsService {
     if (scope && siteId && siteId !== scope.siteId) return empty;
 
     const base: FindOptionsWhere<StockRequest> = {
-      ...(status && { status }),
       ...(siteId && { siteId }),
       ...(mine && { requestedById: actor.id }),
       ...scope,
     };
+    // The queue's statuses are its own; a status filter only narrows it.
     const where = awaitingMe
-      ? this.awaitingWhere(actor, ability, base)
-      : [base];
+      ? this.awaitingWhere(actor, ability, base).filter(
+          (branch) => !status || branch.status === status,
+        )
+      : withoutOthersDrafts(actor, base, status);
     if (!where.length) return empty;
 
     const [items, total] = await findPageDepthOne(this.requests, {
@@ -195,7 +274,7 @@ export class StockRequestsService {
 
   async findOne(actor: User, id: number) {
     const ability = this.abilityFactory.createForUser(actor);
-    const request = await this.findReadable(ability, id);
+    const request = await this.findReadable(actor, ability, id);
     const lines = await this.lines.find({
       ...depthOneWithout(this.lines, 'request'),
       where: { requestId: id },
@@ -208,6 +287,7 @@ export class StockRequestsService {
       // What the caller may do now, so the client need not repeat the rules.
       allowed: {
         decide: !refusal,
+        edit: !this.draftRefusal(ability, request),
         cancel:
           request.requestedById === actor.id &&
           PENDING.includes(request.status),
@@ -220,7 +300,11 @@ export class StockRequestsService {
   }
 
   async findEvents(actor: User, id: number) {
-    await this.findReadable(this.abilityFactory.createForUser(actor), id);
+    await this.findReadable(
+      actor,
+      this.abilityFactory.createForUser(actor),
+      id,
+    );
     return this.events.find({
       ...depthOneWithout(this.events, 'request'),
       where: { requestId: id },
@@ -230,7 +314,11 @@ export class StockRequestsService {
 
   // The whole conversation, oldest first: a request's thread stays short.
   async findComments(actor: User, id: number) {
-    await this.findReadable(this.abilityFactory.createForUser(actor), id);
+    await this.findReadable(
+      actor,
+      this.abilityFactory.createForUser(actor),
+      id,
+    );
     return this.comments.find({
       ...depthOneWithout(this.comments, 'request', 'parent'),
       where: { requestId: id },
@@ -238,10 +326,11 @@ export class StockRequestsService {
     });
   }
 
-  // Anyone who can read the request may join its conversation. Its creator
-  // is notified of everyone else's comments.
+  // Anyone who can read the request may join its conversation. Its requester
+  // (who sent it) is notified of everyone else's comments; a draft has none.
   async addComment(actor: User, id: number, dto: CreateCommentDto) {
     const request = await this.findReadable(
+      actor,
       this.abilityFactory.createForUser(actor),
       id,
     );
@@ -311,7 +400,7 @@ export class StockRequestsService {
   async approve(actor: User, id: number, dto: ApproveStockRequestDto) {
     const ability = this.abilityFactory.createForUser(actor);
     await this.dataSource.transaction(async (manager) => {
-      const request = await this.lockReadable(manager, ability, id);
+      const request = await this.lockReadable(manager, actor, ability, id);
       const step = this.assertCanDecide(actor, ability, request);
       const lines = await manager.find(StockRequestLine, {
         where: { requestId: id },
@@ -379,7 +468,7 @@ export class StockRequestsService {
   async reject(actor: User, id: number, dto: RejectStockRequestDto) {
     const ability = this.abilityFactory.createForUser(actor);
     await this.dataSource.transaction(async (manager) => {
-      const request = await this.lockReadable(manager, ability, id);
+      const request = await this.lockReadable(manager, actor, ability, id);
       this.assertCanDecide(actor, ability, request);
       await this.end(manager, actor, id, StockRequestStatus.REJECTED, dto.note);
     });
@@ -389,7 +478,7 @@ export class StockRequestsService {
   async cancel(actor: User, id: number, dto: CancelStockRequestDto) {
     const ability = this.abilityFactory.createForUser(actor);
     await this.dataSource.transaction(async (manager) => {
-      const request = await this.lockReadable(manager, ability, id);
+      const request = await this.lockReadable(manager, actor, ability, id);
       if (request.requestedById !== actor.id) {
         throw new ForbiddenException(
           i18nMessage('errors.stockRequests.notRequester'),
@@ -417,7 +506,7 @@ export class StockRequestsService {
   async close(actor: User, id: number, dto: CloseStockRequestDto) {
     const ability = this.abilityFactory.createForUser(actor);
     await this.dataSource.transaction(async (manager) => {
-      const request = await this.lockReadable(manager, ability, id);
+      const request = await this.lockReadable(manager, actor, ability, id);
       if (!DELIVERABLE.includes(request.status)) {
         throw new ConflictException(
           i18nMessage('errors.stockRequests.notDeliverable'),
@@ -456,6 +545,77 @@ export class StockRequestsService {
       });
     });
     return this.findOne(actor, id);
+  }
+
+  private async send(manager: EntityManager, actor: User, id: number) {
+    const lines = await manager.find(StockRequestLine, {
+      select: { productId: true },
+      where: { requestId: id },
+      loadEagerRelations: false,
+    });
+    // A product may have been deactivated since the draft was saved.
+    await this.assertProductsActive(
+      manager,
+      lines.map((line) => line.productId),
+    );
+    const status = StockRequestStatus.PENDING_REVIEW;
+    await manager.save(StockRequest, {
+      id,
+      status,
+      requestedById: actor.id,
+      requestedAt: new Date(),
+    });
+    await manager.insert(StockRequestEvent, {
+      requestId: id,
+      action: StockRequestAction.SUBMITTED,
+      status,
+      performedById: actor.id,
+    });
+  }
+
+  private saveLines(
+    manager: EntityManager,
+    requestId: number,
+    lines: CreateStockRequestDto['lines'],
+  ) {
+    return manager.save(
+      StockRequestLine,
+      lines.map((line) =>
+        manager.create(StockRequestLine, {
+          requestId,
+          productId: line.productId,
+          requestedQuantity: line.quantity,
+          quantity: line.quantity,
+          note: line.note ?? null,
+        }),
+      ),
+    );
+  }
+
+  // Also feeds allowed.edit of findOne. Reading a draft already means being
+  // on its site (findReadable); creating requests is the other half.
+  private draftRefusal(
+    ability: AppAbility,
+    request: StockRequest,
+  ): { key: ErrorKey; status: 403 | 409 } | null {
+    if (request.status !== StockRequestStatus.DRAFT) {
+      return { key: 'errors.stockRequests.notDraft', status: 409 };
+    }
+    if (!ability.can('create', subject('StockRequest', request))) {
+      return { key: 'errors.stockRequests.cannotEditDraft', status: 403 };
+    }
+    return null;
+  }
+
+  private assertCanEditDraft(ability: AppAbility, request: StockRequest) {
+    this.throwRefusal(this.draftRefusal(ability, request));
+  }
+
+  private throwRefusal(refusal: { key: ErrorKey; status: 403 | 409 } | null) {
+    if (!refusal) return;
+    const Exception =
+      refusal.status === 409 ? ConflictException : ForbiddenException;
+    throw new Exception(i18nMessage(refusal.key));
   }
 
   private hasOpenShipment(manager: EntityManager, requestId: number) {
@@ -520,12 +680,7 @@ export class StockRequestsService {
     ability: AppAbility,
     request: StockRequest,
   ): Step {
-    const refusal = this.decisionRefusal(actor, ability, request);
-    if (refusal) {
-      const Exception =
-        refusal.status === 409 ? ConflictException : ForbiddenException;
-      throw new Exception(i18nMessage(refusal.key));
-    }
+    this.throwRefusal(this.decisionRefusal(actor, ability, request));
     return STEPS[request.status]!;
   }
 
@@ -603,8 +758,10 @@ export class StockRequestsService {
     }
   }
 
-  // Out of the actor's scope reads as missing, so ids are not revealed.
+  // Out of the actor's scope reads as missing, so ids are not revealed. So
+  // does another site's draft (withoutOthersDrafts is the list rule).
   private async findReadable(
+    actor: User,
     ability: AppAbility,
     id: number,
   ): Promise<StockRequest> {
@@ -612,7 +769,21 @@ export class StockRequestsService {
       ...depthOne(this.requests),
       where: { id },
     });
-    if (!request || !ability.can('read', subject('StockRequest', request))) {
+    return this.assertReadable(actor, ability, id, request);
+  }
+
+  private assertReadable(
+    actor: User,
+    ability: AppAbility,
+    id: number,
+    request: StockRequest | null,
+  ): StockRequest {
+    if (
+      !request ||
+      !ability.can('read', subject('StockRequest', request)) ||
+      (request.status === StockRequestStatus.DRAFT &&
+        request.siteId !== actor.siteId)
+    ) {
       throw this.notFound(id);
     }
     return request;
@@ -622,6 +793,7 @@ export class StockRequestsService {
   // the status the first left.
   private async lockReadable(
     manager: EntityManager,
+    actor: User,
     ability: AppAbility,
     id: number,
   ): Promise<StockRequest> {
@@ -630,10 +802,7 @@ export class StockRequestsService {
       lock: { mode: 'pessimistic_write' },
       loadEagerRelations: false,
     });
-    if (!request || !ability.can('read', subject('StockRequest', request))) {
-      throw this.notFound(id);
-    }
-    return request;
+    return this.assertReadable(actor, ability, id, request);
   }
 
   private notFound(id: number) {

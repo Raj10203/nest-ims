@@ -35,12 +35,14 @@ function setup(stored: object = {}, stocked = false) {
   };
   const categories = { existsBy: vi.fn().mockResolvedValue(true) };
   const items = { existsBy: vi.fn().mockResolvedValue(false) };
+  const requestLines = { existsBy: vi.fn().mockResolvedValue(false) };
   const service = new ProductsService(
     products as any,
     categories as any,
     items as any,
+    requestLines as any,
   );
-  return { service, products, categories, items, manager };
+  return { service, products, categories, items, requestLines, manager };
 }
 
 describe('ProductsService', () => {
@@ -120,5 +122,15 @@ describe('ProductsService', () => {
       id: 1,
       name: 'Bolt M10 zinc',
     });
+  });
+});
+
+describe('ProductsService remove', () => {
+  it('refuses a product that a stock request asks for, with a 409', async () => {
+    const { service, products, requestLines } = setup();
+    requestLines.existsBy.mockResolvedValueOnce(true);
+    await expect(service.remove(1)).rejects.toThrow(ConflictException);
+    expect(requestLines.existsBy).toHaveBeenCalledWith({ productId: 1 });
+    expect(products).not.toHaveProperty('remove');
   });
 });

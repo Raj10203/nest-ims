@@ -33,8 +33,11 @@ const CATALOG_READ: PermissionDef[] = [
   ['read', 'Product'],
 ];
 
-// Any employee of the destination site receives its packages.
-const PACKAGE_RECEIVE: PermissionDef[] = [
+// Any employee of a site asks HQ for stock (drafts, then sending) and
+// receives its packages.
+const SITE_LOGISTICS: PermissionDef[] = [
+  ['create', 'StockRequest'],
+  ['read', 'StockRequest'],
   ['read', 'Package'],
   ['receive', 'Package'],
 ];
@@ -71,17 +74,11 @@ export const ROLE_PERMISSIONS: Record<RoleName, PermissionDef[]> = {
   ],
   // Stock requests and packages of site roles are limited to their own site
   // (CaslAbilityFactory).
-  [RoleName.SITE_INCHARGE]: [
-    ...USER_CRUD,
-    ...CATALOG_READ,
-    ['create', 'StockRequest'],
-    ['read', 'StockRequest'],
-    ...PACKAGE_RECEIVE,
-  ],
+  [RoleName.SITE_INCHARGE]: [...USER_CRUD, ...CATALOG_READ, ...SITE_LOGISTICS],
   [RoleName.SITE_TECHNICIAN]: [
     ['read', 'User'],
     ...CATALOG_READ,
-    ...PACKAGE_RECEIVE,
+    ...SITE_LOGISTICS,
   ],
 };
 

@@ -1,9 +1,11 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -21,6 +23,8 @@ import {
 import {
   createStockRequestSchema,
   type CreateStockRequestDto,
+  updateStockRequestSchema,
+  type UpdateStockRequestDto,
 } from './dto/create-stock-request.dto.js';
 import {
   approveStockRequestSchema,
@@ -46,7 +50,10 @@ import { StockRequestsService } from './stock-requests.service.js';
 export class StockRequestsController {
   constructor(private readonly stockRequests: StockRequestsService) {}
 
-  @ApiOperation({ summary: "Raise a stock request for the caller's site" })
+  @ApiOperation({
+    summary:
+      "Start a stock request for the caller's site: a draft, or sent at once with submit",
+  })
   @Post()
   @CheckAbility('create', 'StockRequest')
   create(
@@ -77,6 +84,44 @@ export class StockRequestsController {
     @Param('id', { schema: idParamSchema }) id: number,
   ) {
     return this.stockRequests.findOne(actor, id);
+  }
+
+  @ApiOperation({
+    summary:
+      'Save a draft whole (its lines are replaced), optionally sending it',
+  })
+  @Patch(':id')
+  @CheckAbility('create', 'StockRequest')
+  update(
+    @CurrentUser() actor: User,
+    @Param('id', { schema: idParamSchema }) id: number,
+    @Body({ schema: updateStockRequestSchema }) dto: UpdateStockRequestDto,
+  ) {
+    return this.stockRequests.update(actor, id, dto);
+  }
+
+  @ApiOperation({ summary: 'Discard a draft' })
+  @Delete(':id')
+  @HttpCode(204)
+  @CheckAbility('create', 'StockRequest')
+  async remove(
+    @CurrentUser() actor: User,
+    @Param('id', { schema: idParamSchema }) id: number,
+  ) {
+    await this.stockRequests.remove(actor, id);
+  }
+
+  @ApiOperation({
+    summary: 'Send a draft to HQ review; the sender becomes its requester',
+  })
+  @Post(':id/submit')
+  @HttpCode(200)
+  @CheckAbility('create', 'StockRequest')
+  submit(
+    @CurrentUser() actor: User,
+    @Param('id', { schema: idParamSchema }) id: number,
+  ) {
+    return this.stockRequests.submit(actor, id);
   }
 
   @ApiOperation({ summary: "A stock request's history, oldest first" })

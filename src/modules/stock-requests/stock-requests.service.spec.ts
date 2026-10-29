@@ -97,6 +97,7 @@ function setup(stored: Partial<StockRequest> = {}) {
     ),
     create: vi.fn((_entity, value) => value),
     insert: vi.fn().mockResolvedValue(undefined),
+    remove: vi.fn().mockResolvedValue(undefined),
     existsBy: vi.fn().mockResolvedValue(true),
   };
   const requests = {
@@ -146,7 +147,7 @@ function setup(stored: Partial<StockRequest> = {}) {
     new CaslAbilityFactory(),
     notifications as any,
   );
-  return { service, manager, site, comments, notifications };
+  return { service, manager, site, products, comments, notifications };
 }
 
 const saved = (manager: ReturnType<typeof setup>['manager'], entity: unknown) =>
@@ -306,14 +307,20 @@ describe('StockRequestsService scope and requester', () => {
     const { service, site } = setup();
     site.type = SiteType.HQ;
     await expect(
-      service.create(requester, { lines: [{ productId: 3, quantity: 1 }] }),
+      service.create(requester, {
+        lines: [{ productId: 3, quantity: 1 }],
+        submit: false,
+      }),
     ).rejects.toThrow('errors.stockRequests.fromHeadquarters');
   });
 
   it('refuses an inactive product', async () => {
     const { service, manager } = setup();
     await expect(
-      service.create(requester, { lines: [{ productId: 4, quantity: 1 }] }),
+      service.create(requester, {
+        lines: [{ productId: 4, quantity: 1 }],
+        submit: false,
+      }),
     ).rejects.toThrow('errors.stockRequests.productInactive');
     expect(manager.save).not.toHaveBeenCalled();
   });
@@ -380,5 +387,97 @@ describe('StockRequestsService comment notifications', () => {
     manager.existsBy.mockResolvedValueOnce(false);
     await service.addComment(author, 7, { body: 'Sending 3 now' });
     expect(notifications.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('StockRequestsService drafts', () => {
+  // Any employee of the site, not only the in-charge.
+  const technician = makeUser(12, RoleName.SITE_TECHNICIAN, SITE);
+  const draft = { status: StockRequestStatus.DRAFT, requestedById: null };
+  const lines = [{ productId: 3, quantity: 2, note: 'Size L' }];
+
+  it('saves a new request as a draft without a requester', async () => {
+    const { service, manager } = setup(draft);
+    await service.create(technician, { lines, submit: false });
+    expect(saved(manager, StockRequest)).toEqual([
+      expect.objectContaining({ status: StockRequestStatus.DRAFT }),
+    ]);
+    expect(saved(manager, StockRequest)[0]).not.toHaveProperty('requestedById');
+    expect(saved(manager, StockRequestLine)).toEqual([
+      [expect.objectContaining({ productId: 3, note: 'Size L' })],
+    ]);
+  });
+
+  it('makes whoever sends the draft its requester', async () => {
+    const { service, manager, products } = setup(draft);
+    products[1].isActive = true;
+    await service.submit(technician, 7);
+    expect(saved(manager, StockRequest)).toEqual([
+      expect.objectContaining({
+        status: StockRequestStatus.PENDING_REVIEW,
+        requestedById: technician.id,
+        requestedAt: expect.any(Date),
+      }),
+    ]);
+    expect(events(manager)).toEqual([
+      expect.objectContaining({ action: StockRequestAction.SUBMITTED }),
+    ]);
+  });
+
+  it('checks the products again when a draft is sent', async () => {
+    const { service } = setup(draft);
+    await expect(service.submit(technician, 7)).rejects.toThrow(
+      'errors.stockRequests.productInactive',
+    );
+  });
+
+  it('replaces the lines of a draft', async () => {
+    const { service, manager } = setup(draft);
+    await service.update(technician, 7, { lines, submit: false });
+    expect(manager.remove).toHaveBeenCalledWith(
+      StockRequestLine,
+      expect.arrayContaining([expect.objectContaining({ id: 71 })]),
+    );
+    expect(events(manager)).toEqual([
+      expect.objectContaining({ action: StockRequestAction.UPDATED }),
+    ]);
+  });
+
+  it('refuses to change a request once it is sent (409)', async () => {
+    const { service } = setup();
+    await expect(
+      service.update(technician, 7, { lines, submit: false }),
+    ).rejects.toThrow(ConflictException);
+    await expect(service.remove(requester, 7)).rejects.toThrow(
+      'errors.stockRequests.notDraft',
+    );
+  });
+
+  it("hides a site's draft from everyone elsewhere, HQ too (404)", async () => {
+    for (const actor of [hqManager, superAdmin, reviewer]) {
+      const { service } = setup(draft);
+      await expect(service.findOne(actor, 7)).rejects.toThrow(
+        NotFoundException,
+      );
+    }
+  });
+
+  it('lets the site edit its draft but nobody decide on it', async () => {
+    const { service } = setup(draft);
+    const request = await service.findOne(technician, 7);
+    expect(request.allowed).toMatchObject({
+      edit: true,
+      decide: false,
+      cancel: false,
+    });
+  });
+
+  it('discards a draft with its lines', async () => {
+    const { service, manager } = setup(draft);
+    await service.remove(technician, 7);
+    expect(manager.remove).toHaveBeenLastCalledWith(
+      StockRequest,
+      expect.objectContaining({ id: 7 }),
+    );
   });
 });
