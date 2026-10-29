@@ -45,6 +45,8 @@ src/
     users/  sites/  roles/   feature modules (controller, service, dto, specs); users emit the user.created event
     categories/  products/   product catalog (CRUD); product-rules.ts holds the type/measure-type rules
     items/                   stock: one row per physical item, automatic codes, movements, stock counts
+    stock-requests/          sites ask HQ for stock: two-step review chain, quantities, comments, delivery status
+    shipments/               HQ packs approved requests into packages, dispatches them; sites receive
     invitations/             invitation emails (listens to user.created), set-password link, resend
     jobs/                    RabbitMQ publisher, consumer, retry topology
     mail/                    dynamic module MailModule.forRoot(options): nodemailer + the "send email OTP" job handler
@@ -123,13 +125,13 @@ A user is **invited** until they set a first password, then **active**; an admin
 
 Five roles in a strict hierarchy:
 
-| Role              | Level | Notes                                          |
-| ----------------- | ----- | ---------------------------------------------- |
-| `super_admin`     | 100   | `manage all`; only role that can create admins |
-| `admin`           | 80    | manages all lower-level users                  |
-| `manager`         | 60    | manages users it created                       |
-| `site_incharge`   | 40    | manages users it created; reads the catalog    |
-| `site_technician` | 20    | read-only (itself and the catalog)             |
+| Role              | Level | Notes                                           |
+| ----------------- | ----- | ----------------------------------------------- |
+| `super_admin`     | 100   | `manage all`; only role that can create admins  |
+| `admin`           | 80    | manages all lower-level users                   |
+| `manager`         | 60    | manages users it created                        |
+| `site_incharge`   | 40    | manages users it created; reads the catalog     |
+| `site_technician` | 20    | reads itself and the catalog; receives packages |
 
 - A user can only manage users with a **strictly lower level**; everyone except `admin` can only manage accounts they created.
 - **Permissions are data, scoping is code.** `src/database/seeds/role-permissions.ts` is the single source of truth for `(action, subject)` pairs and is synced into the DB by the seed command. `CaslAbilityFactory` adds the hierarchy and ownership conditions.
@@ -139,7 +141,7 @@ Five roles in a strict hierarchy:
 
 A user has **one primary role** (the table above) and **any number of feature roles**, which only add permissions: a promoted site employee keeps the same account, moves to the HQ site and gets `stock_manager`.
 
-- Stored in the same `roles` table with `kind = 'feature'` (level 0, no part in the hierarchy); their permissions come from `FEATURE_ROLE_PERMISSIONS` in `role-permissions.ts` and are seeded like the others. Today: `stock_manager` (add, edit and delete items). `request_reviewer` and `shipment_manager` arrive with their features.
+- Stored in the same `roles` table with `kind = 'feature'` (level 0, no part in the hierarchy); their permissions come from `FEATURE_ROLE_PERMISSIONS` in `role-permissions.ts` and are seeded like the others. Today: `stock_manager` (add, edit and delete items), `stock_request_reviewer` (the HQ review step of stock requests, §1.6.3) and `shipment_manager` (packs and dispatches shipments, §1.6.4).
 - Grants are rows in `user_feature_roles` (with `grantedById`), so every grant and revoke is in the audit log.
 - `PUT /users/:id/feature-roles { roleIds }` replaces the set. It needs `assign FeatureRole` (super admin, admin, manager) **and** the usual rule for editing that user, so nobody can grant capabilities to themselves or to a higher role. `GET /roles/features` lists them; `GET /roles` stays primary-only.
 - `CaslAbilityFactory` merges the permissions of the primary role and every feature role. The auth guard reloads the user on every request, so a grant or revoke applies to the next request.
@@ -178,21 +180,75 @@ The catalog describes _what_ can be stocked; stock units with their own ids, sta
 
 The `items` table **is** the inventory: one row per physical unit (one drill, one jacket, one box of bolts). There is no quantity table; stock levels are counts over `items`, so there is a single source of truth.
 
-| Column                 | Meaning                                                                         |
-| ---------------------- | ------------------------------------------------------------------------------- |
-| `code`                 | unique, `<prefix>-<suffix>`, printed on the sticker (`DRL-000014`, `DRL-OLD17`) |
-| `productId`, `siteId`  | what it is and where it is now (always HQ until shipments arrive)               |
-| `status`               | `available` for now; requests, shipments and issue flows add their statuses     |
-| `condition`            | 0–100, starts at 100; `null` for consumables                                    |
-| `serialNumber`         | optional manufacturer serial, unique per product                                |
-| `nextCalibrationDueAt` | calibrated products only; defaults to today + the product's interval            |
+| Column                 | Meaning                                                                          |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| `code`                 | unique, `<prefix>-<suffix>`, printed on the sticker (`DRL-000014`, `DRL-OLD17`)  |
+| `productId`            | what it is                                                                       |
+| `siteId`, `shipmentId` | where it is: a site, or a shipment while on the road; exactly one is set (CHECK) |
+| `status`               | `available`, `packed`, `in_transit`, `missing`; issue flows add more             |
+| `condition`            | 0–100, starts at 100; `null` for consumables                                     |
+| `serialNumber`         | optional manufacturer serial, unique per product                                 |
+| `nextCalibrationDueAt` | calibrated products only; defaults to today + the product's interval             |
 
 - **Adding stock** (`stock_manager`): `POST /items/bulk { productId, quantity }` creates one item per unit at HQ with the next automatic codes (at most 10 000 per call, so a typo cannot hold the product's row lock for long); `POST /items` adds one item and may take a `codeSuffix` (capital letters and digits; the prefix is always the product's) and a serial number. Receipts and invoices come later.
 - **Automatic codes** come from `products.lastItemNumber`, raised inside a transaction that holds a row lock on that product (`SELECT … FOR UPDATE`). Concurrent adds of the same product queue for a few milliseconds and get separate number ranges; other products are not affected. A typed suffix that an automatic code could produce later (`000050`) moves the counter past it, so the two never collide. Numbers are never reused.
-- **History** is `item_movements`, append-only: one row per event (`added`, `condition_changed`; shipments and issues add more) with the site, status, condition before/after, note and who did it. It is the item's own audit trail, so the generic audit log skips it (`@NotAudited()` on the entity). A bulk add writes one audit entry for the whole range (`entityId` `DRL-000001..DRL-000500`) instead of one per item.
+- **History** is `item_movements`, append-only: one row per event (`added`, `condition_changed`, `packed`, `unpacked`, `dispatched`, `received`, `marked_missing`; issues add more) with the site, shipment, status, condition before/after, note and who did it. It is the item's own audit trail, so the generic audit log skips it (`@NotAudited()` on the entity). A bulk add writes one audit entry for the whole range (`entityId` `DRL-000001..DRL-000500`) instead of one per item.
 - An item can be deleted only to correct a wrong entry: while it is `available` at HQ. Its movements go with it.
-- `GET /items/stock` returns counts per product, site and status (filters: product, category, site, status): the stock dashboard.
+- `GET /items/stock` returns counts per product, site and status (filters: product, category, site, status): the stock dashboard. Items on a shipment count under site `null`.
+- An item on a shipment cannot be edited (409) until it is received.
 - Admin and manager can read items; only `stock_manager` (or super admin) changes them.
+- `GET /items/movements` lists every item's movements, newest first (filters: site, product, action), for the logistics screens.
+
+### 1.6.3 Stock requests (logistics)
+
+A site asks headquarters for stock with a **stock request**: a ticket with products and quantities, a two-step review chain and a conversation.
+
+| Table                    | Meaning                                                                                                                                                                                       |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `stock_requests`         | the requesting site, status, note, `neededBy`, who raised, reviewed, approved or closed it and when                                                                                           |
+| `stock_request_lines`    | one product per line: `requestedQuantity` (as asked, never changed) and `quantity` (as the reviewers set it)                                                                                  |
+| `stock_request_events`   | append-only history (`created`, `quantity_changed`, `reviewed`, `approved`, `rejected`, `cancelled`, `dispatched`, `received`, `items_missing`, `closed`; delivery events carry `shipmentId`) |
+| `stock_request_comments` | the conversation; replies are one level deep (`parentId` is always a top comment)                                                                                                             |
+
+- **Raising** (`POST /stock-requests { lines: [{ productId, quantity }], note?, neededBy? }`, `site_incharge`): always for the requester's own site, never from HQ (HQ supplies the stock); active products only, each once, 1–10 000 units per line.
+- **Review chain**: `pending_review` → (`stock_request_reviewer` at HQ) → `pending_approval` → (`manager`) → `approved`. One endpoint, `POST /stock-requests/:id/approve { lines?: [{ id, quantity }], note? }`, takes whichever step is due and may change line quantities on the way (0 leaves a product out, at least one must stay above 0); every change is a `quantity_changed` event. `POST /:id/reject { note }` ends it at either step. Nobody decides on their own request, and the reviewer cannot also give the final approval, so the two steps always need two people (403 otherwise). The request row is locked (`FOR UPDATE`) while a decision is saved, so two reviewers acting at once cannot both move it.
+- **Cancel** (`POST /:id/cancel`): the requester only, while it is pending (409 after).
+- **Who sees what**: `site_incharge` raises and reads its own site's requests only (`CaslAbilityFactory` adds `{ siteId }` to the stock request permissions of primary roles below manager; `readableStockRequestsWhere` is the same rule for list queries, so keep them in sync). The reviewer feature role, manager, admin and super admin read every site's. Other sites' requests answer 404.
+- **Queues**: `GET /stock-requests?awaitingMe=true` lists what waits for the caller's step, oldest first (without their own requests, or the ones they reviewed themselves). Other filters: `status`, `siteId`, `mine`. Each list row carries `lineCount` and `totalQuantity`.
+- **Detail**: `GET /:id` returns the request with its lines (each with `received`, `inFlight` and `remaining`, counted from packages) and `allowed: { decide, cancel, close }` for the caller, computed with the same rules as the endpoints. `GET /:id/events` and `GET /:id/comments` return the whole history and conversation, oldest first.
+- **Comments** (`POST /:id/comments { body, parentId? }`): anyone who can read the request, at any status. A reply to a reply joins the same top comment.
+- Events and comments are append-only (`@NotAudited()`); the request and its lines go through the audit log like any entity.
+- **Delivery status** follows from the received counts (`syncRequestStatus` in `request-progress.ts`, run under the request's row lock after every dispatch, receipt and shipment close): everything approved received → `fulfilled`; something received → `partially_fulfilled`; nothing received but a package on the road → `in_transit`; otherwise back to `approved` (everything sent went missing).
+- **Close** (`POST /:id/close { note }`, manager): ends delivery with what the site has. Each line's `quantity` drops to its received count (a `quantity_changed` event each), so the request becomes `fulfilled`. Refused (409) while a draft or dispatched shipment carries a package for it.
+
+### 1.6.4 Shipments
+
+HQ sends stock to sites in **shipments**. A shipment is one trip from HQ; it carries **packages**, and each package belongs to exactly one approved stock request, so to one site. A shipment can serve many requests, and a request can be spread over many shipments.
+
+| Table           | Meaning                                                                                                                                                  |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shipments`     | `draft` → `dispatched` → `closed` (or `cancelled` from draft); optional vehicle number, driver name and phone; who dispatched and closed it              |
+| `packages`      | the shipment, the request and its site (copied for scoping), `packing` → `in_transit` → `received` / `partially_received` / `missing`                    |
+| `package_items` | one row per item packed, with its request line and `packed` / `received` / `missing`; kept after delivery (`@NotAudited()`, item_movements is the trail) |
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  available --> packed: pack (draft)
+  packed --> available: unpack / remove package / cancel
+  packed --> in_transit: dispatch (location HQ → shipment)
+  in_transit --> available: receive (location shipment → site)
+  in_transit --> missing: close shipment by hand
+```
+
+- **Packing** (`shipment_manager`): `POST /shipments`, then `POST /shipments/:id/packages { requestId }` (the request must be `approved`, `in_transit` or `partially_fulfilled`, with something remaining), then `POST /packages/:id/items { codes }`. Only items `available` at HQ, of a product the request asks for, and never more than a line's **remaining** (approved − received − packed or on the road; missing items count for neither, so they can be sent again). Unpack with `DELETE /packages/:id/items/:itemId`, drop a package with `DELETE /packages/:id`. Packages change only while the shipment is a draft.
+- **Dispatch** (`POST /shipments/:id/dispatch`): needs at least one package and no empty one. Every item moves from HQ to the shipment (`siteId` null, `shipmentId` set, `in_transit`), and each request's status is recalculated.
+- **Receiving** (`POST /packages/:id/receive { codes? }`): any employee of the destination site (`receive Package`, scoped to `{ siteId }` like stock requests). Without codes the whole package; with codes only those items, and the package stays `partially_received`. Items move to the site as `available`. When no package of the shipment is still on the road, the shipment closes itself.
+- **Close by hand** (`POST /shipments/:id/close { note }`): for packages that never arrive. Items still on the road become `missing` and keep the shipment as their location; their requests get an `items_missing` event and can be packed again.
+- **Cancel** (`POST /shipments/:id/cancel`, draft only): its packages are deleted and their items unpacked.
+- **Who sees what**: `GET /shipments` and `GET /shipments/:id` for the shipment manager, manager, admin and super admin. `GET /packages` (`?status=&shipmentId=&requestId=&siteId=`) and `GET /packages/:id` (with its items and `allowed: { receive }`) for those and for site roles, who see only their own site's packages (`readablePackagesWhere`, same rule as the CASL condition).
+- **Concurrency**: every change locks the shipment row first, then the package, then the requests in id order, before any plain read (so reads are current, not an older snapshot). Item status changes are conditional updates (`WHERE status = <expected>`), so two packers can never take the same item; a mismatch answers 409. Each package's item moves write one audit entry (`entityId` `package:<id>`) next to the per-item movements.
+- Barcode or QR scanning will call the same endpoints with the scanned codes.
 
 ### 1.7 Background jobs (RabbitMQ)
 
@@ -278,18 +334,21 @@ Every create, update and delete of an entity is recorded in `audit_logs`: who (`
 
 All routes are under `/api`, except `GET /health`, `GET /health/live` and the docs (`/docs`). Every route accepts `?lang=` / `Accept-Language`.
 
-| Area        | Routes                                                                                                                                                                                                                                                                                                                                                           |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Auth        | `POST /auth/login`, `/auth/login/mfa`, `/auth/refresh`, `/auth/logout`, `/auth/forgot-password` (public), `GET/PATCH /auth/me`, `PUT /auth/me/password`, `PUT /auth/me/mfa`, `POST /auth/email-otp/send`, `/auth/email-otp/verify`                                                                                                                               |
-| Invitations | `POST /invitations/accept` (public; invitation and password reset links), `POST /users/:id/invitation` (resend)                                                                                                                                                                                                                                                  |
-| Users       | `POST /users` (body needs `siteId`), `GET /users` (`?search=&roleId=&siteId=&status=`), `GET/PATCH /users/:id`, `DELETE /users/:id` (pending invitations only), `POST /users/:id/deactivate`, `/users/:id/reactivate`, `PUT /users/:id/role`, `PUT /users/:id/feature-roles`, `PUT /users/:id/avatar` (multipart `file`, max 500 KB), `DELETE /users/:id/avatar` |
-| Sites       | `POST/GET /sites` (`GET` takes `search`: name or code), `GET/PATCH/DELETE /sites/:id` (body accepts `inchargeId`)                                                                                                                                                                                                                                                |
-| Categories  | `POST/GET /categories` (`?search=&isActive=`), `GET/PATCH/DELETE /categories/:id`                                                                                                                                                                                                                                                                                |
-| Products    | `POST/GET /products` (`?search=&categoryId=&type=&measureType=&isActive=`), `GET /products/options`, `GET/PATCH/DELETE /products/:id`                                                                                                                                                                                                                            |
-| Items       | `POST /items/bulk`, `POST/GET /items` (`?search=&productId=&categoryId=&siteId=&status=`), `GET /items/stock`, `GET/PATCH/DELETE /items/:id`, `GET /items/:id/movements`                                                                                                                                                                                         |
-| Roles       | `GET /roles` (primary), `GET /roles/features`                                                                                                                                                                                                                                                                                                                    |
-| Audit       | `GET /audit-logs` (super admin, admin)                                                                                                                                                                                                                                                                                                                           |
-| Health      | `GET /health`, `GET /health/live` (no prefix)                                                                                                                                                                                                                                                                                                                    |
+| Area           | Routes                                                                                                                                                                                                                                                                                                                                                           |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Auth           | `POST /auth/login`, `/auth/login/mfa`, `/auth/refresh`, `/auth/logout`, `/auth/forgot-password` (public), `GET/PATCH /auth/me`, `PUT /auth/me/password`, `PUT /auth/me/mfa`, `POST /auth/email-otp/send`, `/auth/email-otp/verify`                                                                                                                               |
+| Invitations    | `POST /invitations/accept` (public; invitation and password reset links), `POST /users/:id/invitation` (resend)                                                                                                                                                                                                                                                  |
+| Users          | `POST /users` (body needs `siteId`), `GET /users` (`?search=&roleId=&siteId=&status=`), `GET/PATCH /users/:id`, `DELETE /users/:id` (pending invitations only), `POST /users/:id/deactivate`, `/users/:id/reactivate`, `PUT /users/:id/role`, `PUT /users/:id/feature-roles`, `PUT /users/:id/avatar` (multipart `file`, max 500 KB), `DELETE /users/:id/avatar` |
+| Sites          | `POST/GET /sites` (`GET` takes `search`: name or code), `GET/PATCH/DELETE /sites/:id` (body accepts `inchargeId`)                                                                                                                                                                                                                                                |
+| Categories     | `POST/GET /categories` (`?search=&isActive=`), `GET/PATCH/DELETE /categories/:id`                                                                                                                                                                                                                                                                                |
+| Products       | `POST/GET /products` (`?search=&categoryId=&type=&measureType=&isActive=`), `GET /products/options`, `GET/PATCH/DELETE /products/:id`                                                                                                                                                                                                                            |
+| Items          | `POST /items/bulk`, `POST/GET /items` (`?search=&productId=&categoryId=&siteId=&status=`), `GET /items/stock`, `GET /items/movements`, `GET/PATCH/DELETE /items/:id`, `GET /items/:id/movements`                                                                                                                                                                 |
+| Roles          | `GET /roles` (primary), `GET /roles/features`                                                                                                                                                                                                                                                                                                                    |
+| Stock requests | `POST/GET /stock-requests` (`?status=&siteId=&awaitingMe=&mine=`), `GET /stock-requests/:id`, `GET /stock-requests/:id/events`, `GET/POST /stock-requests/:id/comments`, `POST /stock-requests/:id/approve`, `/reject`, `/cancel`, `/close`                                                                                                                      |
+| Shipments      | `POST/GET /shipments` (`?status=`), `GET/PATCH /shipments/:id`, `POST /shipments/:id/packages`, `/dispatch`, `/cancel`, `/close`                                                                                                                                                                                                                                 |
+| Packages       | `GET /packages` (`?status=&shipmentId=&requestId=&siteId=`), `GET/DELETE /packages/:id`, `POST /packages/:id/items`, `DELETE /packages/:id/items/:itemId`, `POST /packages/:id/receive`                                                                                                                                                                          |
+| Audit          | `GET /audit-logs` (super admin, admin)                                                                                                                                                                                                                                                                                                                           |
+| Health         | `GET /health`, `GET /health/live` (no prefix)                                                                                                                                                                                                                                                                                                                    |
 
 ---
 
@@ -487,6 +546,7 @@ sequenceDiagram
 | Quorum queues, ack after handler                                        | No lost jobs on broker or worker restart (at-least-once, idempotent handlers)                                                                                                  |
 | Permissions in DB, scoping in code                                      | Change role capabilities with a seed; keep hierarchy rules type-checked and tested                                                                                             |
 | 404 instead of 403 for out-of-scope records                             | Does not reveal which ids exist                                                                                                                                                |
+| One approve endpoint for both review steps, two different people        | The client cannot skip or repeat a step: the request's status says which permission is needed, and the reviewer can never also approve                                         |
 | Hashed refresh tokens and OTPs                                          | A database leak does not expose usable credentials                                                                                                                             |
 | zod for env and requests                                                | One validation library; bad config fails at boot, not at runtime                                                                                                               |
 | Migrations only, backward compatible                                    | Zero-downtime deploys; old version keeps working during schema change                                                                                                          |
@@ -506,6 +566,8 @@ sequenceDiagram
 | Product type on the product, not the category                           | One category mixes kinds of item; categories stay plain grouping metadata                                                                                                      |
 | One measure type per product                                            | Stock ids are per piece or per pack, never per bolt; an item sold both ways is two products                                                                                    |
 | One row per physical item, no quantity table                            | Every bolt box and drill can be traced; stock counts cannot drift from the items they count                                                                                    |
+| Item location is a site or a shipment, never neither                    | Goods on the road stay traceable, and a lost item stays pinned to the shipment it was lost from                                                                                |
+| One package per request; request status from received counts            | Receiving needs no matching, and the status can never disagree with what the site actually holds                                                                               |
 | Per-product counter under a row lock                                    | Codes are sequential, never duplicated or reused, without locking anything but that product                                                                                    |
 | Feature roles on top of one primary role                                | Capabilities follow the person, not the site or rank; granting one is a single call, not a new account                                                                         |
 | Lists counted without `select` (`findPageDepthOne`)                     | TypeORM 1.1 counts a selecting find with `COUNT(DISTINCT <all columns>)`, which MySQL makes skip rows with any NULL                                                            |

@@ -64,3 +64,23 @@ export function findPageDepthOne<T extends ObjectLiteral>(
     repository.count({ where: options.where }),
   ]);
 }
+
+// depthOne without some relations, such as the parent a child row is listed
+// under (a request's lines need not repeat the request).
+export function depthOneWithout<T extends ObjectLiteral>(
+  repository: Repository<T>,
+  ...names: string[]
+): DepthOneOptions<T> {
+  const options = depthOne(repository);
+  const select: Record<string, unknown> = { ...options.select };
+  const relations: Record<string, unknown> = { ...options.relations };
+  for (const name of names) {
+    delete select[name];
+    delete relations[name];
+  }
+  return {
+    ...options,
+    select: select as FindOptionsSelect<T>,
+    relations: relations as FindOptionsRelations<T>,
+  };
+}

@@ -80,6 +80,7 @@ export type I18nTranslations = {
             "calibrationNotAllowed": string;
             "numbersExhausted": string;
             "notDeletable": string;
+            "onShipment": string;
         };
         "files": {
             "required": string;
@@ -101,6 +102,48 @@ export type I18nTranslations = {
             "digit": string;
             "symbol": string;
             "containsName": string;
+        };
+        "stockRequests": {
+            "notFound": string;
+            "noSite": string;
+            "fromHeadquarters": string;
+            "productNotFound": string;
+            "productInactive": string;
+            "duplicateProduct": string;
+            "duplicateLine": string;
+            "lineNotFound": string;
+            "nothingApproved": string;
+            "notPending": string;
+            "notYourStep": string;
+            "ownRequest": string;
+            "sameReviewer": string;
+            "notRequester": string;
+            "commentNotFound": string;
+            "notDeliverable": string;
+            "shipmentOpen": string;
+        };
+        "shipments": {
+            "notFound": string;
+            "notDraft": string;
+            "notDispatched": string;
+            "finished": string;
+            "noPackages": string;
+            "emptyPackage": string;
+        };
+        "packages": {
+            "notFound": string;
+            "requestNotFound": string;
+            "requestNotDeliverable": string;
+            "nothingRemaining": string;
+            "itemNotFound": string;
+            "itemNotAvailable": string;
+            "productNotRequested": string;
+            "overRemaining": string;
+            "duplicateCode": string;
+            "itemNotInPackage": string;
+            "notInTransit": string;
+            "codeNotInPackage": string;
+            "itemsChanged": string;
         };
     };
     "messages": {

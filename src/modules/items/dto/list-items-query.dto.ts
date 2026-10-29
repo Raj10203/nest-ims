@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ItemStatus } from '../../../common/enums/item-status.enum.js';
+import { MovementAction } from '../../../common/enums/movement-action.enum.js';
 
 const filters = {
   productId: z.coerce.number().int().positive().optional(),
@@ -20,6 +21,16 @@ export type ListItemsQueryDto = z.output<typeof listItemsQuerySchema>;
 export const stockQuerySchema = z.object(filters);
 
 export type StockQueryDto = z.output<typeof stockQuerySchema>;
+
+export const movementsQuerySchema = z.object({
+  siteId: filters.siteId,
+  productId: filters.productId,
+  action: z.enum(MovementAction).optional(),
+  page: filters.page,
+  limit: filters.limit,
+});
+
+export type MovementsQueryDto = z.output<typeof movementsQuerySchema>;
 
 export const pageQuerySchema = z.object({
   page: filters.page,

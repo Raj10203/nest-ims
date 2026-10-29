@@ -1,7 +1,16 @@
-import { Column, Entity, Index, JoinColumn, ManyToOne, Unique } from 'typeorm';
+import {
+  Check,
+  Column,
+  Entity,
+  Index,
+  JoinColumn,
+  ManyToOne,
+  Unique,
+} from 'typeorm';
 import { ItemStatus } from '../common/enums/item-status.enum.js';
 import { BaseEntity } from './base.entity.js';
 import { Product } from './product.entity.js';
+import { Shipment } from './shipment.entity.js';
 import { Site } from './site.entity.js';
 import { User } from './user.entity.js';
 
@@ -9,6 +18,8 @@ import { User } from './user.entity.js';
 @Entity('items')
 @Unique(['productId', 'serialNumber'])
 @Index(['productId', 'siteId', 'status'])
+// Written by hand in the Shipments migration: TypeORM skips CHECKs on MySQL.
+@Check('CHK_items_location', '(`siteId` IS NULL) <> (`shipmentId` IS NULL)')
 export class Item extends BaseEntity {
   // <product prefix>-<suffix>, printed on the sticker.
   @Column({ length: 40, unique: true })
@@ -21,12 +32,21 @@ export class Item extends BaseEntity {
   @Column({ type: 'int' })
   productId: number;
 
-  @ManyToOne(() => Site, { nullable: false, onDelete: 'RESTRICT' })
+  // Where it is: a site, or a shipment while on the road (and for good once
+  // it went missing there). Exactly one is set.
+  @ManyToOne(() => Site, { nullable: true, onDelete: 'RESTRICT' })
   @JoinColumn({ name: 'siteId' })
-  site: Site;
+  site: Site | null;
 
-  @Column({ type: 'int' })
-  siteId: number;
+  @Column({ type: 'int', nullable: true })
+  siteId: number | null;
+
+  @ManyToOne(() => Shipment, { nullable: true, onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'shipmentId' })
+  shipment: Shipment | null;
+
+  @Column({ type: 'int', nullable: true })
+  shipmentId: number | null;
 
   @Column({ type: 'varchar', length: 20 })
   status: ItemStatus;

@@ -26,6 +26,8 @@ import {
 import {
   listItemsQuerySchema,
   type ListItemsQueryDto,
+  movementsQuerySchema,
+  type MovementsQueryDto,
   pageQuerySchema,
   type PageQueryDto,
   stockQuerySchema,
@@ -70,12 +72,21 @@ export class ItemsController {
     return this.itemsService.findAll(query);
   }
 
-  // Declared before :id, which would otherwise match "stock".
+  // stock and movements are declared before :id, which would match them.
   @ApiOperation({ summary: 'Item counts per product, site and status' })
   @Get('stock')
   @CheckAbility('read', 'Item')
   stock(@Query({ schema: stockQuerySchema }) query: StockQueryDto) {
     return this.itemsService.stock(query);
+  }
+
+  @ApiOperation({ summary: 'Every item movement, newest first' })
+  @Get('movements')
+  @CheckAbility('read', 'Item')
+  findAllMovements(
+    @Query({ schema: movementsQuerySchema }) query: MovementsQueryDto,
+  ) {
+    return this.itemsService.findAllMovements(query);
   }
 
   @ApiOperation({ summary: 'Get one item' })
