@@ -42,6 +42,11 @@ const SITE_LOGISTICS: PermissionDef[] = [
   ['receive', 'Package'],
 ];
 
+// 'route StockRequest' is HQ's power over requests (manager and above, and
+// the HQ reviewer): raise one between any two sites, approved at once, assign
+// it to an employee of the receiving site, and change its sites or assignee
+// until it is packed. Site employees only ask for their own site, from HQ.
+
 // Single source of truth for what each role may do. The seeder makes the
 // database match this exactly (adds missing rows, removes stale ones).
 // Hierarchy limits (who can touch whom) are applied by CaslAbilityFactory.
@@ -54,6 +59,7 @@ export const ROLE_PERMISSIONS: Record<RoleName, PermissionDef[]> = {
     ['assign', 'FeatureRole'],
     ['read', 'Item'],
     ['read', 'StockRequest'],
+    ['route', 'StockRequest'],
     ['read', 'Shipment'],
     ['read', 'Package'],
     ['read', 'AuditLog'],
@@ -67,6 +73,7 @@ export const ROLE_PERMISSIONS: Record<RoleName, PermissionDef[]> = {
     ['read', 'StockRequest'],
     // The final step of the review chain.
     ['approve', 'StockRequest'],
+    ['route', 'StockRequest'],
     // Ends a request with what was received.
     ['close', 'StockRequest'],
     ['read', 'Shipment'],
@@ -100,6 +107,9 @@ export const FEATURE_ROLE_PERMISSIONS: Record<
   [FeatureRoleName.STOCK_REQUEST_REVIEWER]: [
     ['read', 'StockRequest'],
     ['review', 'StockRequest'],
+    ['route', 'StockRequest'],
+    // Routing chooses between sites.
+    ['read', 'Site'],
     ['read', 'Product'],
     ['read', 'Category'],
   ],

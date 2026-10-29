@@ -16,6 +16,8 @@ const transport = {
 };
 
 export const createShipmentSchema = z.object({
+  // Headquarters when left out.
+  fromSiteId: z.number().int().positive().nullish().meta({ example: null }),
   vehicleNumber: transport.vehicleNumber.meta({ example: 'GJ01AB1234' }),
   driverName: transport.driverName.meta({ example: 'Ramesh Kumar' }),
   driverPhone: transport.driverPhone.meta({ example: '+91 98765 43210' }),

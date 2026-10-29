@@ -9,6 +9,7 @@ const page = {
 
 export const listShipmentsQuerySchema = z.object({
   status: z.enum(ShipmentStatus).optional(),
+  fromSiteId: z.coerce.number().int().positive().optional(),
   ...page,
 });
 

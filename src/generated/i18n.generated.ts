@@ -125,6 +125,17 @@ export type I18nTranslations = {
             "shipmentOpen": string;
             "notDraft": string;
             "cannotEditDraft": string;
+            "cannotRoute": string;
+            "destinationRequired": string;
+            "sameSites": string;
+            "siteNotFound": string;
+            "siteInactive": string;
+            "assigneeNotAtSite": string;
+            "notRoutable": string;
+            "alreadyPacked": string;
+            "notCancellable": string;
+            "requesterRequired": string;
+            "requesterNotAtSite": string;
         };
         "shipments": {
             "notFound": string;
@@ -134,6 +145,7 @@ export type I18nTranslations = {
             "noPackages": string;
             "emptyPackage": string;
             "phoneFormat": string;
+            "fromSiteInvalid": string;
         };
         "packages": {
             "notFound": string;
@@ -150,6 +162,7 @@ export type I18nTranslations = {
             "codeNotInPackage": string;
             "itemsChanged": string;
             "requestInShipment": string;
+            "otherSource": string;
         };
         "notifications": {
             "notFound": string;

@@ -101,7 +101,7 @@
   "stockRequests": {
     "notFound": "Stock request {id} not found",
     "noSite": "Your account has no site, so you cannot raise a stock request",
-    "fromHeadquarters": "Headquarters supplies the stock; requests come from the other sites",
+    "fromHeadquarters": "Headquarters cannot ask itself for stock; HQ staff raise requests between sites by choosing both sites",
     "productNotFound": "Product {id} does not exist",
     "productInactive": "Product {id} is inactive",
     "duplicateProduct": "Each product can be listed only once in a request",
@@ -112,12 +112,23 @@
     "notYourStep": "This step of the review is not yours to take",
     "ownRequest": "You cannot approve or reject your own request",
     "sameReviewer": "The final approval must come from someone other than the reviewer",
-    "notRequester": "Only the person who raised the request can cancel it",
+    "notRequester": "Only the requester, the assignee or headquarters can cancel this request",
     "commentNotFound": "Comment {id} is not part of this request",
     "notDeliverable": "Only an approved request that is not yet complete can be closed",
     "shipmentOpen": "A shipment carrying this request is still open; dispatch and close it, or remove the package, first",
     "notDraft": "Only a draft can be changed, sent or discarded",
-    "cannotEditDraft": "Your role cannot change this site's stock requests"
+    "cannotEditDraft": "Your role cannot change this site's stock requests",
+    "cannotRoute": "Only headquarters can choose a request's sites or assignee",
+    "destinationRequired": "Choose the site that receives the stock",
+    "sameSites": "The sending and the receiving site must be different",
+    "siteNotFound": "Site {id} does not exist",
+    "siteInactive": "Site {id} is inactive",
+    "assigneeNotAtSite": "The assignee must be an active employee of the receiving site",
+    "notRoutable": "This request's sites can no longer change: it is a draft, or it is finished",
+    "alreadyPacked": "Stock has been packed for this request, so its sites and assignee can no longer change",
+    "notCancellable": "This request can no longer be cancelled: its stock is packed, or it is finished",
+    "requesterRequired": "Moving the request to another site needs a requester there: choose one of its employees",
+    "requesterNotAtSite": "The requester must be an active employee of the receiving site"
   },
   "shipments": {
     "notFound": "Shipment {id} not found",
@@ -126,7 +137,8 @@
     "finished": "This shipment is closed or cancelled",
     "noPackages": "Add at least one package before dispatch",
     "emptyPackage": "Package {id} has no items",
-    "phoneFormat": "Enter a phone number of 6 to 20 digits, spaces or dashes, optionally starting with +"
+    "phoneFormat": "Enter a phone number of 6 to 20 digits, spaces or dashes, optionally starting with +",
+    "fromSiteInvalid": "Site {id} does not exist or is inactive"
   },
   "packages": {
     "notFound": "Package {id} not found",
@@ -134,7 +146,7 @@
     "requestNotDeliverable": "Stock request {id} is not approved, or is already complete",
     "nothingRemaining": "Everything approved on stock request {id} is already packed or received",
     "itemNotFound": "No item has code {code}",
-    "itemNotAvailable": "Item {code} is not available at headquarters",
+    "itemNotAvailable": "Item {code} is not available at the shipment's site",
     "productNotRequested": "Item {code} is not a product this request asks for",
     "overRemaining": "Only {remaining} more of {product} can be packed for this request",
     "duplicateCode": "Each item code can be listed only once",
@@ -142,7 +154,8 @@
     "notInTransit": "This package is not waiting to be received",
     "codeNotInPackage": "Item {code} is not waiting in this package",
     "itemsChanged": "Some of these items changed meanwhile; reload and try again",
-    "requestInShipment": "Stock request {id} already has a package in this shipment"
+    "requestInShipment": "Stock request {id} already has a package in this shipment",
+    "otherSource": "Request {id} is sent from another site than this shipment"
   },
   "notifications": {
     "notFound": "Notification {id} not found"

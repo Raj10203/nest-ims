@@ -15,9 +15,11 @@ import {
   FEATURE_ROLE_PERMISSIONS,
   ROLE_PERMISSIONS,
 } from '../../database/seeds/role-permissions.js';
+import { Package } from '../../entities/package.entity.js';
 import { Permission } from '../../entities/permission.entity.js';
 import { Product } from '../../entities/product.entity.js';
 import { Role } from '../../entities/role.entity.js';
+import { Site } from '../../entities/site.entity.js';
 import { StockRequestEvent } from '../../entities/stock-request-event.entity.js';
 import { StockRequestLine } from '../../entities/stock-request-line.entity.js';
 import { StockRequest } from '../../entities/stock-request.entity.js';
@@ -83,13 +85,40 @@ function setup(stored: Partial<StockRequest> = {}) {
     { id: 4, isActive: false },
   ];
   const site = { id: SITE, type: SiteType.SITE };
+  // packaged: a package exists for the request; activeUsers: who may be
+  // notified.
+  const state = {
+    packaged: false,
+    assigneeAtSite: true,
+    activeUsers: new Set([requester.id, reviewer.id, hqManager.id]),
+  };
+  const hq = { id: 1, type: SiteType.HQ, isActive: true };
+  const sites: { id: number; type?: SiteType; isActive: boolean }[] = [
+    hq,
+    { ...site, isActive: true },
+    { id: 6, isActive: false },
+  ];
   const manager = {
-    findOne: vi.fn((entity) =>
-      Promise.resolve(entity === StockRequest ? { ...request } : site),
-    ),
-    find: vi.fn((entity) =>
+    findOne: vi.fn((entity, options?: { where?: { type?: SiteType } }) =>
       Promise.resolve(
-        entity === Product ? products : lines.map((line) => ({ ...line })),
+        entity === StockRequest
+          ? { ...request }
+          : options?.where?.type === SiteType.HQ
+            ? hq
+            : site,
+      ),
+    ),
+    find: vi.fn((entity, options?: { where?: { id?: { value: number[] } } }) =>
+      Promise.resolve(
+        entity === Product
+          ? products
+          : entity === Site
+            ? sites
+            : entity === User
+              ? (options?.where?.id?.value ?? [])
+                  .filter((id) => state.activeUsers.has(id))
+                  .map((id) => ({ id }))
+              : lines.map((line) => ({ ...line })),
       ),
     ),
     save: vi.fn((_entity, value) =>
@@ -98,7 +127,12 @@ function setup(stored: Partial<StockRequest> = {}) {
     create: vi.fn((_entity, value) => value),
     insert: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
-    existsBy: vi.fn().mockResolvedValue(true),
+    // A User check is the assignee's: at the destination unless told not.
+    existsBy: vi.fn((entity) =>
+      Promise.resolve(
+        entity === Package ? state.packaged : state.assigneeAtSite,
+      ),
+    ),
   };
   const requests = {
     findOne: vi.fn(() => Promise.resolve({ ...request })),
@@ -126,6 +160,7 @@ function setup(stored: Partial<StockRequest> = {}) {
     manager: {
       createQueryBuilder: vi.fn(() => query),
       exists: vi.fn().mockResolvedValue(false),
+      existsBy: vi.fn(() => Promise.resolve(state.packaged)),
     },
   };
   const comments = {
@@ -147,7 +182,16 @@ function setup(stored: Partial<StockRequest> = {}) {
     new CaslAbilityFactory(),
     notifications as any,
   );
-  return { service, manager, site, products, comments, notifications };
+  return {
+    service,
+    manager,
+    site,
+    sites,
+    products,
+    comments,
+    notifications,
+    state,
+  };
 }
 
 const saved = (manager: ReturnType<typeof setup>['manager'], entity: unknown) =>
@@ -383,8 +427,8 @@ describe('StockRequestsService comment notifications', () => {
   });
 
   it('skips a deactivated creator', async () => {
-    const { service, manager, notifications } = setup();
-    manager.existsBy.mockResolvedValueOnce(false);
+    const { service, state, notifications } = setup();
+    state.activeUsers.delete(requester.id);
     await service.addComment(author, 7, { body: 'Sending 3 now' });
     expect(notifications.create).not.toHaveBeenCalled();
   });
@@ -479,5 +523,164 @@ describe('StockRequestsService drafts', () => {
       StockRequest,
       expect.objectContaining({ id: 7 }),
     );
+  });
+});
+
+describe('StockRequestsService routing by HQ', () => {
+  const lines = [{ productId: 3, quantity: 2, note: null }];
+
+  it('raises a request between two sites, approved at once', async () => {
+    const { service, manager } = setup();
+    await service.create(hqManager, {
+      lines,
+      siteId: SITE,
+      assigneeId: requester.id,
+      submit: false,
+    });
+    expect(saved(manager, StockRequest)[0]).toMatchObject({
+      fromSiteId: 1,
+      siteId: SITE,
+      status: StockRequestStatus.APPROVED,
+      approvedById: hqManager.id,
+    });
+    expect(events(manager).map((event) => event.action)).toEqual([
+      StockRequestAction.CREATED,
+      StockRequestAction.APPROVED,
+      StockRequestAction.ASSIGNED,
+    ]);
+  });
+
+  it('keeps a site employee to their own site, from HQ', async () => {
+    const { service, manager } = setup();
+    await expect(
+      service.create(requester, { lines, siteId: 6, submit: false }),
+    ).rejects.toThrow('errors.stockRequests.cannotRoute');
+    expect(manager.save).not.toHaveBeenCalled();
+  });
+
+  it('needs two different, active sites', async () => {
+    const { service } = setup();
+    await expect(
+      service.create(hqManager, {
+        lines,
+        fromSiteId: SITE,
+        siteId: SITE,
+        submit: false,
+      }),
+    ).rejects.toThrow('errors.stockRequests.sameSites');
+    await expect(
+      service.create(hqManager, { lines, siteId: 6, submit: false }),
+    ).rejects.toThrow('errors.stockRequests.siteInactive');
+  });
+
+  it('assigns only an employee of the receiving site', async () => {
+    const { service, state } = setup();
+    state.assigneeAtSite = false;
+    await expect(
+      service.create(hqManager, {
+        lines,
+        siteId: SITE,
+        assigneeId: 99,
+        submit: false,
+      }),
+    ).rejects.toThrow('errors.stockRequests.assigneeNotAtSite');
+  });
+
+  it('moves a request to another site and hands it to an employee there', async () => {
+    const { service, manager, sites, notifications } = setup({
+      fromSiteId: 1,
+      assigneeId: requester.id,
+    });
+    sites.push({ id: 8, isActive: true });
+    await service.route(hqManager, 7, { siteId: 8, requestedById: 80 });
+    expect(saved(manager, StockRequest)).toEqual([
+      { id: 7, fromSiteId: 1, siteId: 8 },
+      { id: 7, requestedById: 80 },
+      { id: 7, assigneeId: null },
+    ]);
+    expect(events(manager)).toEqual([
+      expect.objectContaining({
+        action: StockRequestAction.ROUTE_CHANGED,
+        toSiteId: 8,
+      }),
+      expect.objectContaining({
+        action: StockRequestAction.REQUESTER_CHANGED,
+        requesterId: 80,
+      }),
+      expect.objectContaining({
+        action: StockRequestAction.ASSIGNED,
+        assigneeId: null,
+      }),
+    ]);
+    expect(notifications.create).toHaveBeenCalledWith(
+      manager,
+      80,
+      NotificationType.STOCK_REQUEST_HANDED_OVER,
+      expect.objectContaining({ requestId: 7 }),
+    );
+  });
+
+  it('needs a requester at the new site to move a request', async () => {
+    const { service, manager, sites, state } = setup({ fromSiteId: 1 });
+    sites.push({ id: 8, isActive: true });
+    await expect(service.route(hqManager, 7, { siteId: 8 })).rejects.toThrow(
+      'errors.stockRequests.requesterRequired',
+    );
+    state.assigneeAtSite = false;
+    await expect(
+      service.route(hqManager, 7, { siteId: 8, requestedById: 80 }),
+    ).rejects.toThrow('errors.stockRequests.requesterNotAtSite');
+    expect(manager.save).not.toHaveBeenCalled();
+  });
+
+  it('fixes the route once stock is packed for it', async () => {
+    const { service, state } = setup({
+      status: StockRequestStatus.APPROVED,
+      fromSiteId: 1,
+    });
+    state.packaged = true;
+    await expect(service.route(hqManager, 7, { siteId: 8 })).rejects.toThrow(
+      'errors.stockRequests.alreadyPacked',
+    );
+  });
+
+  it('never lets a site employee route', async () => {
+    const { service } = setup({ fromSiteId: 1 });
+    await expect(service.route(requester, 7, { siteId: 8 })).rejects.toThrow(
+      ForbiddenException,
+    );
+  });
+
+  it('lets the assignee cancel an approved request until it is packed', async () => {
+    const assignee = makeUser(14, RoleName.SITE_TECHNICIAN, SITE);
+    const approved = {
+      status: StockRequestStatus.APPROVED,
+      requestedById: hqManager.id,
+      assigneeId: assignee.id,
+    };
+    const { service, manager } = setup(approved);
+    await service.cancel(assignee, 7, {});
+    expect(saved(manager, StockRequest)).toEqual([
+      expect.objectContaining({ status: StockRequestStatus.CANCELLED }),
+    ]);
+
+    const packed = setup(approved);
+    packed.state.packaged = true;
+    await expect(packed.service.cancel(assignee, 7, {})).rejects.toThrow(
+      'errors.stockRequests.notCancellable',
+    );
+  });
+
+  it("notifies the assignee of others' comments too", async () => {
+    const assignee = makeUser(14, RoleName.SITE_TECHNICIAN, SITE);
+    const { service, state, notifications } = setup({
+      assigneeId: assignee.id,
+    });
+    state.activeUsers.add(assignee.id);
+    await service.addComment(hqManager, 7, { body: 'Packing tomorrow' });
+    expect(notifications.create.mock.calls.map(([, userId]) => userId)).toEqual(
+      expect.arrayContaining([requester.id, assignee.id]),
+    );
+    expect(notifications.create).toHaveBeenCalledTimes(2);
   });
 });

@@ -13,6 +13,7 @@ import {
   FindOptionsWhere,
   In,
   IsNull,
+  Like,
   Not,
   Or,
   Repository,
@@ -27,7 +28,9 @@ import {
   depthOne,
   depthOneWithout,
   findPageDepthOne,
+  summaryOf,
 } from '../../common/typeorm/depth-one.js';
+import { containsPattern } from '../../common/typeorm/like-pattern.js';
 import { Package } from '../../entities/package.entity.js';
 import { Product } from '../../entities/product.entity.js';
 import { Site } from '../../entities/site.entity.js';
@@ -45,6 +48,7 @@ import { NotificationsService } from '../notifications/notifications.service.js'
 import { CreateCommentDto } from './dto/create-comment.dto.js';
 import {
   CreateStockRequestDto,
+  RouteStockRequestDto,
   UpdateStockRequestDto,
 } from './dto/create-stock-request.dto.js';
 import {
@@ -53,7 +57,10 @@ import {
   CloseStockRequestDto,
   RejectStockRequestDto,
 } from './dto/decide-stock-request.dto.js';
-import { ListStockRequestsQueryDto } from './dto/list-stock-requests-query.dto.js';
+import {
+  ListAssigneesQueryDto,
+  ListStockRequestsQueryDto,
+} from './dto/list-stock-requests-query.dto.js';
 import {
   DELIVERABLE,
   lineProgress,
@@ -72,6 +79,14 @@ const PENDING = [
   StockRequestStatus.PENDING_REVIEW,
   StockRequestStatus.PENDING_APPROVAL,
 ];
+
+// HQ may change the sites or assignee of these, until a package exists:
+// drafts are their site's own, and packed items already wait at fromSiteId.
+const ROUTABLE = [...PENDING, StockRequestStatus.APPROVED];
+
+type Refusal = { key: ErrorKey; status: 403 | 409 } | null;
+
+type Route = { fromSiteId: number; siteId: number; assigneeId: number | null };
 
 const notMe = (id: number) => Or(Not(id), IsNull());
 
@@ -121,51 +136,202 @@ export class StockRequestsService {
     private readonly notifications: NotificationsService,
   ) {}
 
-  // Always for the actor's own site, which must not be headquarters:
-  // headquarters is where the stock comes from. A draft unless dto.submit.
+  // Without route fields: for the actor's own site, from headquarters (which
+  // cannot ask itself), a draft unless dto.submit. With them ('route
+  // StockRequest', HQ): between any two sites, approved at once, since the
+  // people who would review it are the ones raising it.
   async create(actor: User, dto: CreateStockRequestDto) {
-    const id = await this.dataSource.transaction(async (manager) => {
-      const site = actor.siteId
-        ? await manager.findOne(Site, {
-            where: { id: actor.siteId },
-            loadEagerRelations: false,
-          })
-        : null;
-      if (!site) {
-        throw new BadRequestException(
-          i18nMessage('errors.stockRequests.noSite'),
-        );
-      }
-      if (site.type === SiteType.HQ) {
-        throw new BadRequestException(
-          i18nMessage('errors.stockRequests.fromHeadquarters'),
-        );
-      }
-      await this.assertProductsActive(
-        manager,
-        dto.lines.map((line) => line.productId),
+    const routed =
+      dto.fromSiteId != null || dto.siteId != null || dto.assigneeId != null;
+    // The controller cannot gate this: which permission depends on the body.
+    const ability = this.abilityFactory.createForUser(actor);
+    if (routed && !ability.can('route', 'StockRequest')) {
+      throw new ForbiddenException(
+        i18nMessage('errors.stockRequests.cannotRoute'),
       );
+    }
+    if (!routed && !ability.can('create', 'StockRequest')) {
+      throw new ForbiddenException(i18nMessage('errors.forbidden'));
+    }
+    const [id, notification] = await this.dataSource.transaction(
+      async (manager) => {
+        const route = routed
+          ? await this.chosenRoute(manager, dto)
+          : await this.ownSiteRoute(manager, actor);
+        await this.assertProductsActive(
+          manager,
+          dto.lines.map((line) => line.productId),
+        );
 
-      const request = await manager.save(
-        StockRequest,
-        manager.create(StockRequest, {
-          siteId: site.id,
-          status: StockRequestStatus.DRAFT,
-          note: dto.note ?? null,
-          neededBy: dto.neededBy ?? null,
-        }),
-      );
-      await this.saveLines(manager, request.id, dto.lines);
-      await manager.insert(StockRequestEvent, {
-        requestId: request.id,
-        action: StockRequestAction.CREATED,
-        status: request.status,
-        performedById: actor.id,
-      });
-      if (dto.submit) await this.send(manager, actor, request.id);
-      return request.id;
-    });
+        const now = new Date();
+        const request = await manager.save(
+          StockRequest,
+          manager.create(StockRequest, {
+            fromSiteId: route.fromSiteId,
+            siteId: route.siteId,
+            status: routed
+              ? StockRequestStatus.APPROVED
+              : StockRequestStatus.DRAFT,
+            note: dto.note ?? null,
+            neededBy: dto.neededBy ?? null,
+            ...(routed && {
+              requestedById: actor.id,
+              requestedAt: now,
+              approvedById: actor.id,
+              approvedAt: now,
+            }),
+          }),
+        );
+        await this.saveLines(manager, request.id, dto.lines);
+        const event = { requestId: request.id, performedById: actor.id };
+        await manager.insert(StockRequestEvent, {
+          ...event,
+          action: StockRequestAction.CREATED,
+          status: request.status,
+          fromSiteId: route.fromSiteId,
+          toSiteId: route.siteId,
+        });
+        if (routed) {
+          await manager.insert(StockRequestEvent, {
+            ...event,
+            action: StockRequestAction.APPROVED,
+            status: request.status,
+          });
+        } else if (dto.submit) {
+          await this.send(manager, actor, request.id);
+        }
+        return [
+          request.id,
+          route.assigneeId === null
+            ? null
+            : await this.assign(manager, actor, request, route.assigneeId),
+        ] as const;
+      },
+    );
+    if (notification) this.notifications.send(notification);
     return this.findOne(actor, id);
+  }
+
+  // HQ's change of a request's sites, assignee or requester. A field left out
+  // stays; a new destination clears an assignee who is not at it, and HQ must
+  // hand the request to an employee of the new site: its requester always
+  // works where the stock goes, so it keeps seeing its own request.
+  async route(actor: User, id: number, dto: RouteStockRequestDto) {
+    const ability = this.abilityFactory.createForUser(actor);
+    const notifications = await this.dataSource.transaction(async (manager) => {
+      const request = await this.lockReadable(manager, actor, ability, id);
+      this.throwRefusal(await this.routeRefusal(manager, ability, request));
+      const siteId = dto.siteId ?? request.siteId;
+      const route: Route = {
+        fromSiteId: dto.fromSiteId ?? request.fromSiteId,
+        siteId,
+        assigneeId:
+          dto.assigneeId !== undefined
+            ? dto.assigneeId
+            : siteId === request.siteId
+              ? request.assigneeId
+              : null,
+      };
+      const requesterId = dto.requestedById ?? request.requestedById;
+      const moved =
+        route.fromSiteId !== request.fromSiteId || siteId !== request.siteId;
+      const reassigned = route.assigneeId !== request.assigneeId;
+      const handedOver = requesterId !== request.requestedById;
+      if (siteId !== request.siteId && !handedOver) {
+        throw new BadRequestException(
+          i18nMessage('errors.stockRequests.requesterRequired'),
+        );
+      }
+      if (moved) await this.assertSites(manager, route);
+      if (reassigned && route.assigneeId !== null) {
+        await this.assertEmployee(
+          manager,
+          route.assigneeId,
+          siteId,
+          'errors.stockRequests.assigneeNotAtSite',
+        );
+      }
+      if (handedOver && requesterId !== null) {
+        await this.assertEmployee(
+          manager,
+          requesterId,
+          siteId,
+          'errors.stockRequests.requesterNotAtSite',
+        );
+      }
+      if (moved) {
+        await manager.save(StockRequest, {
+          id,
+          fromSiteId: route.fromSiteId,
+          siteId,
+        });
+        await manager.insert(StockRequestEvent, {
+          requestId: id,
+          action: StockRequestAction.ROUTE_CHANGED,
+          status: request.status,
+          fromSiteId: route.fromSiteId,
+          toSiteId: siteId,
+          performedById: actor.id,
+        });
+      }
+      const created = [];
+      if (handedOver && requesterId !== null) {
+        await manager.save(StockRequest, { id, requestedById: requesterId });
+        await manager.insert(StockRequestEvent, {
+          requestId: id,
+          action: StockRequestAction.REQUESTER_CHANGED,
+          status: request.status,
+          requesterId,
+          performedById: actor.id,
+        });
+        if (requesterId !== actor.id) {
+          created.push(
+            await this.notifications.create(
+              manager,
+              requesterId,
+              NotificationType.STOCK_REQUEST_HANDED_OVER,
+              { requestId: id, by: personSummary(actor) },
+            ),
+          );
+        }
+      }
+      if (reassigned) {
+        created.push(
+          await this.assign(manager, actor, request, route.assigneeId),
+        );
+      }
+      return created;
+    });
+    for (const notification of notifications) {
+      if (notification) this.notifications.send(notification);
+    }
+    return this.findOne(actor, id);
+  }
+
+  // The routing pickers' list: active employees of one site, as summaries,
+  // so HQ can assign people outside its own users scope.
+  async findAssignees({ siteId, search, page, limit }: ListAssigneesQueryDto) {
+    const base: FindOptionsWhere<User> = { siteId, isActive: true };
+    const pattern = search && Like(containsPattern(search));
+    const where = pattern
+      ? [
+          { ...base, firstName: pattern },
+          { ...base, lastName: pattern },
+        ]
+      : base;
+    const users = this.dataSource.getRepository(User);
+    const [items, total] = await Promise.all([
+      users.find({
+        select: summaryOf(User),
+        where,
+        order: { firstName: 'ASC', lastName: 'ASC' },
+        skip: (page - 1) * limit,
+        take: limit,
+        loadEagerRelations: false,
+      }),
+      users.count({ where }),
+    ]);
+    return { items, total, page, limit };
   }
 
   // A draft is saved whole, by any employee of its site.
@@ -237,6 +403,7 @@ export class StockRequestsService {
     {
       status,
       siteId,
+      fromSiteId,
       awaitingMe,
       mine,
       page,
@@ -251,6 +418,7 @@ export class StockRequestsService {
 
     const base: FindOptionsWhere<StockRequest> = {
       ...(siteId && { siteId }),
+      ...(fromSiteId && { fromSiteId }),
       ...(mine && { requestedById: actor.id }),
       ...scope,
     };
@@ -280,7 +448,8 @@ export class StockRequestsService {
       where: { requestId: id },
       order: { id: 'ASC' },
     });
-    const progress = await lineProgress(this.dataSource.manager, lines);
+    const { manager } = this.dataSource;
+    const progress = await lineProgress(manager, lines);
     const refusal = this.decisionRefusal(actor, ability, request);
     return Object.assign(request, {
       lines: lines.map((line) => Object.assign(line, progress.get(line.id))),
@@ -288,13 +457,12 @@ export class StockRequestsService {
       allowed: {
         decide: !refusal,
         edit: !this.draftRefusal(ability, request),
-        cancel:
-          request.requestedById === actor.id &&
-          PENDING.includes(request.status),
+        route: !(await this.routeRefusal(manager, ability, request)),
+        cancel: !(await this.cancelRefusal(manager, actor, ability, request)),
         close:
           ability.can('close', subject('StockRequest', request)) &&
           DELIVERABLE.includes(request.status) &&
-          !(await this.hasOpenShipment(this.dataSource.manager, id)),
+          !(await this.hasOpenShipment(manager, id)),
       },
     });
   }
@@ -327,7 +495,8 @@ export class StockRequestsService {
   }
 
   // Anyone who can read the request may join its conversation. Its requester
-  // (who sent it) is notified of everyone else's comments; a draft has none.
+  // (who sent it) and its assignee are notified of everyone else's comments;
+  // a draft has neither.
   async addComment(actor: User, id: number, dto: CreateCommentDto) {
     const request = await this.findReadable(
       actor,
@@ -353,8 +522,10 @@ export class StockRequestsService {
         }),
       );
     }
-    const { requestedById } = request;
-    const [saved, notification] = await this.dataSource.transaction(
+    const owners = [
+      ...new Set([request.requestedById, request.assigneeId]),
+    ].filter((userId): userId is number => !!userId && userId !== actor.id);
+    const [saved, notifications] = await this.dataSource.transaction(
       async (manager) => {
         const comment = await manager.save(StockRequestComment, {
           requestId: id,
@@ -362,33 +533,37 @@ export class StockRequestsService {
           body: dto.body,
           authorId: actor.id,
         });
-        const notify =
-          requestedById !== null &&
-          requestedById !== actor.id &&
-          (await manager.existsBy(User, { id: requestedById, isActive: true }));
-        return [
-          comment,
-          notify
-            ? await this.notifications.create(
-                manager,
-                requestedById,
-                NotificationType.STOCK_REQUEST_COMMENT,
-                {
-                  requestId: id,
-                  commentId: comment.id,
-                  parentId: parent?.id ?? null,
-                  excerpt: dto.body.slice(0, 200),
-                  author: personSummary(actor),
-                  repliedTo: parent?.author
-                    ? personSummary(parent.author)
-                    : null,
-                },
-              )
-            : null,
-        ] as const;
+        const recipients = owners.length
+          ? await manager.find(User, {
+              select: { id: true },
+              where: { id: In(owners), isActive: true },
+              loadEagerRelations: false,
+            })
+          : [];
+        const created = [];
+        for (const recipient of recipients) {
+          created.push(
+            await this.notifications.create(
+              manager,
+              recipient.id,
+              NotificationType.STOCK_REQUEST_COMMENT,
+              {
+                requestId: id,
+                commentId: comment.id,
+                parentId: parent?.id ?? null,
+                excerpt: dto.body.slice(0, 200),
+                author: personSummary(actor),
+                repliedTo: parent?.author ? personSummary(parent.author) : null,
+              },
+            ),
+          );
+        }
+        return [comment, created] as const;
       },
     );
-    if (notification) this.notifications.send(notification);
+    for (const notification of notifications) {
+      this.notifications.send(notification);
+    }
     return this.comments.findOne({
       ...depthOneWithout(this.comments, 'request', 'parent'),
       where: { id: saved.id },
@@ -479,16 +654,9 @@ export class StockRequestsService {
     const ability = this.abilityFactory.createForUser(actor);
     await this.dataSource.transaction(async (manager) => {
       const request = await this.lockReadable(manager, actor, ability, id);
-      if (request.requestedById !== actor.id) {
-        throw new ForbiddenException(
-          i18nMessage('errors.stockRequests.notRequester'),
-        );
-      }
-      if (!PENDING.includes(request.status)) {
-        throw new ConflictException(
-          i18nMessage('errors.stockRequests.notPending'),
-        );
-      }
+      this.throwRefusal(
+        await this.cancelRefusal(manager, actor, ability, request),
+      );
       await this.end(
         manager,
         actor,
@@ -573,6 +741,175 @@ export class StockRequestsService {
     });
   }
 
+  // A site employee's own request: to their site, from headquarters.
+  private async ownSiteRoute(
+    manager: EntityManager,
+    actor: User,
+  ): Promise<Route> {
+    const site = actor.siteId
+      ? await manager.findOne(Site, {
+          where: { id: actor.siteId },
+          loadEagerRelations: false,
+        })
+      : null;
+    if (!site) {
+      throw new BadRequestException(i18nMessage('errors.stockRequests.noSite'));
+    }
+    if (site.type === SiteType.HQ) {
+      throw new BadRequestException(
+        i18nMessage('errors.stockRequests.fromHeadquarters'),
+      );
+    }
+    return {
+      fromSiteId: (await this.headquarters(manager)).id,
+      siteId: site.id,
+      assigneeId: null,
+    };
+  }
+
+  private async chosenRoute(
+    manager: EntityManager,
+    dto: CreateStockRequestDto,
+  ): Promise<Route> {
+    if (!dto.siteId) {
+      throw new BadRequestException(
+        i18nMessage('errors.stockRequests.destinationRequired'),
+      );
+    }
+    const route = {
+      fromSiteId: dto.fromSiteId ?? (await this.headquarters(manager)).id,
+      siteId: dto.siteId,
+      assigneeId: dto.assigneeId ?? null,
+    };
+    await this.assertSites(manager, route);
+    if (route.assigneeId !== null) {
+      await this.assertEmployee(
+        manager,
+        route.assigneeId,
+        route.siteId,
+        'errors.stockRequests.assigneeNotAtSite',
+      );
+    }
+    return route;
+  }
+
+  private async assertSites(manager: EntityManager, route: Route) {
+    if (route.fromSiteId === route.siteId) {
+      throw new BadRequestException(
+        i18nMessage('errors.stockRequests.sameSites'),
+      );
+    }
+    const sites = await manager.find(Site, {
+      select: { id: true, isActive: true },
+      where: { id: In([route.fromSiteId, route.siteId]) },
+      loadEagerRelations: false,
+    });
+    for (const id of [route.fromSiteId, route.siteId]) {
+      const site = sites.find((candidate) => candidate.id === id);
+      if (!site) {
+        throw new BadRequestException(
+          i18nMessage('errors.stockRequests.siteNotFound', { id }),
+        );
+      }
+      if (!site.isActive) {
+        throw new BadRequestException(
+          i18nMessage('errors.stockRequests.siteInactive', { id }),
+        );
+      }
+    }
+  }
+
+  // The assignee and the requester are active employees of the receiving site.
+  private async assertEmployee(
+    manager: EntityManager,
+    userId: number,
+    siteId: number,
+    key: ErrorKey,
+  ) {
+    if (
+      !(await manager.existsBy(User, { id: userId, siteId, isActive: true }))
+    ) {
+      throw new BadRequestException(i18nMessage(key));
+    }
+  }
+
+  // Records the new assignee, and notifies them unless they assigned
+  // themselves. The caller sends the notification after the commit.
+  private async assign(
+    manager: EntityManager,
+    actor: User,
+    request: Pick<StockRequest, 'id' | 'status'>,
+    assigneeId: number | null,
+  ) {
+    await manager.save(StockRequest, { id: request.id, assigneeId });
+    await manager.insert(StockRequestEvent, {
+      requestId: request.id,
+      action: StockRequestAction.ASSIGNED,
+      status: request.status,
+      assigneeId,
+      performedById: actor.id,
+    });
+    return assigneeId && assigneeId !== actor.id
+      ? this.notifications.create(
+          manager,
+          assigneeId,
+          NotificationType.STOCK_REQUEST_ASSIGNED,
+          { requestId: request.id, by: personSummary(actor) },
+        )
+      : null;
+  }
+
+  // Also feeds allowed.route of findOne.
+  private async routeRefusal(
+    manager: EntityManager,
+    ability: AppAbility,
+    request: StockRequest,
+  ): Promise<Refusal> {
+    if (!ability.can('route', subject('StockRequest', request))) {
+      return { key: 'errors.stockRequests.cannotRoute', status: 403 };
+    }
+    if (!ROUTABLE.includes(request.status)) {
+      return { key: 'errors.stockRequests.notRoutable', status: 409 };
+    }
+    if (await manager.existsBy(Package, { requestId: request.id })) {
+      return { key: 'errors.stockRequests.alreadyPacked', status: 409 };
+    }
+    return null;
+  }
+
+  // Its requester, its assignee, or HQ (route), until it is packed. Also feeds
+  // allowed.cancel of findOne.
+  private async cancelRefusal(
+    manager: EntityManager,
+    actor: User,
+    ability: AppAbility,
+    request: StockRequest,
+  ): Promise<Refusal> {
+    if (
+      request.requestedById !== actor.id &&
+      request.assigneeId !== actor.id &&
+      !ability.can('route', subject('StockRequest', request))
+    ) {
+      return { key: 'errors.stockRequests.notRequester', status: 403 };
+    }
+    if (
+      !ROUTABLE.includes(request.status) ||
+      (await manager.existsBy(Package, { requestId: request.id }))
+    ) {
+      return { key: 'errors.stockRequests.notCancellable', status: 409 };
+    }
+    return null;
+  }
+
+  private async headquarters(manager: EntityManager): Promise<Site> {
+    const hq = await manager.findOne(Site, {
+      where: { type: SiteType.HQ },
+      loadEagerRelations: false,
+    });
+    if (!hq) throw new ConflictException(i18nMessage('errors.sites.hqMissing'));
+    return hq;
+  }
+
   private saveLines(
     manager: EntityManager,
     requestId: number,
@@ -594,10 +931,7 @@ export class StockRequestsService {
 
   // Also feeds allowed.edit of findOne. Reading a draft already means being
   // on its site (findReadable); creating requests is the other half.
-  private draftRefusal(
-    ability: AppAbility,
-    request: StockRequest,
-  ): { key: ErrorKey; status: 403 | 409 } | null {
+  private draftRefusal(ability: AppAbility, request: StockRequest): Refusal {
     if (request.status !== StockRequestStatus.DRAFT) {
       return { key: 'errors.stockRequests.notDraft', status: 409 };
     }
@@ -611,7 +945,7 @@ export class StockRequestsService {
     this.throwRefusal(this.draftRefusal(ability, request));
   }
 
-  private throwRefusal(refusal: { key: ErrorKey; status: 403 | 409 } | null) {
+  private throwRefusal(refusal: Refusal) {
     if (!refusal) return;
     const Exception =
       refusal.status === 409 ? ConflictException : ForbiddenException;
@@ -660,7 +994,7 @@ export class StockRequestsService {
     actor: User,
     ability: AppAbility,
     request: StockRequest,
-  ): { key: ErrorKey; status: 403 | 409 } | null {
+  ): Refusal {
     const step = STEPS[request.status];
     if (!step) return { key: 'errors.stockRequests.notPending', status: 409 };
     if (!ability.can(step, subject('StockRequest', request))) {
