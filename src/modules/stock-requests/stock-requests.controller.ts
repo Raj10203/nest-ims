@@ -23,6 +23,8 @@ import {
 import {
   createStockRequestSchema,
   type CreateStockRequestDto,
+  routeStockRequestSchema,
+  type RouteStockRequestDto,
   updateStockRequestSchema,
   type UpdateStockRequestDto,
 } from './dto/create-stock-request.dto.js';
@@ -37,6 +39,8 @@ import {
   type RejectStockRequestDto,
 } from './dto/decide-stock-request.dto.js';
 import {
+  listAssigneesQuerySchema,
+  type ListAssigneesQueryDto,
   listStockRequestsQuerySchema,
   type ListStockRequestsQueryDto,
 } from './dto/list-stock-requests-query.dto.js';
@@ -52,10 +56,10 @@ export class StockRequestsController {
 
   @ApiOperation({
     summary:
-      "Start a stock request for the caller's site: a draft, or sent at once with submit",
+      "Start a stock request for the caller's site (a draft, or sent with submit); HQ may route it between any two sites, approved at once",
   })
+  // Gated in the service: route fields need 'route', the rest 'create'.
   @Post()
-  @CheckAbility('create', 'StockRequest')
   create(
     @CurrentUser() actor: User,
     @Body({ schema: createStockRequestSchema }) dto: CreateStockRequestDto,
@@ -72,6 +76,19 @@ export class StockRequestsController {
     query: ListStockRequestsQueryDto,
   ) {
     return this.stockRequests.findAll(actor, query);
+  }
+
+  // Declared before :id, which would otherwise match "assignees".
+  @ApiOperation({
+    summary:
+      "Active employees of a site, to assign a request to (HQ's pickers)",
+  })
+  @Get('assignees')
+  @CheckAbility('route', 'StockRequest')
+  findAssignees(
+    @Query({ schema: listAssigneesQuerySchema }) query: ListAssigneesQueryDto,
+  ) {
+    return this.stockRequests.findAssignees(query);
   }
 
   @ApiOperation({
@@ -122,6 +139,20 @@ export class StockRequestsController {
     @Param('id', { schema: idParamSchema }) id: number,
   ) {
     return this.stockRequests.submit(actor, id);
+  }
+
+  @ApiOperation({
+    summary:
+      "Change a request's sending or receiving site or its assignee, until it is packed",
+  })
+  @Patch(':id/route')
+  @CheckAbility('route', 'StockRequest')
+  route(
+    @CurrentUser() actor: User,
+    @Param('id', { schema: idParamSchema }) id: number,
+    @Body({ schema: routeStockRequestSchema }) dto: RouteStockRequestDto,
+  ) {
+    return this.stockRequests.route(actor, id, dto);
   }
 
   @ApiOperation({ summary: "A stock request's history, oldest first" })

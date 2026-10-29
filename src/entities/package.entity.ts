@@ -6,7 +6,8 @@ import { Site } from './site.entity.js';
 import { StockRequest } from './stock-request.entity.js';
 import { User } from './user.entity.js';
 
-// Packed at headquarters for exactly one stock request, so for one site.
+// Packed at the shipment's site for exactly one stock request, so for one
+// destination site.
 @Entity('packages')
 @Index(['siteId', 'status'])
 export class Package extends BaseEntity {

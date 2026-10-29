@@ -17,6 +17,7 @@ import {
   FEATURE_ROLE_PERMISSIONS,
   ROLE_PERMISSIONS,
 } from '../../database/seeds/role-permissions.js';
+import { ItemMovement } from '../../entities/item-movement.entity.js';
 import { Item } from '../../entities/item.entity.js';
 import { PackageItem } from '../../entities/package-item.entity.js';
 import { Package } from '../../entities/package.entity.js';
@@ -271,6 +272,7 @@ function setup() {
   db.add(StockRequest, {
     id: REQUEST,
     siteId: SITE,
+    fromSiteId: HQ,
     status: StockRequestStatus.APPROVED,
   });
   db.add(StockRequestLine, {
@@ -328,6 +330,53 @@ function setup() {
 }
 
 describe('ShipmentsService flows', () => {
+  it('ships a site-to-site request from its sending site only', async () => {
+    const { db, shipments, item } = setup();
+    // HQ routed 1 drill from SITE to another site; SITE holds one.
+    db.add(Site, { id: 6, type: SiteType.SITE, isActive: true });
+    db.get(Site, SITE).isActive = true;
+    db.add(Item, {
+      code: 'S-1',
+      productId: 3,
+      siteId: SITE,
+      shipmentId: null,
+      status: ItemStatus.AVAILABLE,
+    });
+    db.add(StockRequest, {
+      id: 8,
+      siteId: 6,
+      fromSiteId: SITE,
+      status: StockRequestStatus.APPROVED,
+    });
+    db.add(StockRequestLine, {
+      id: 81,
+      requestId: 8,
+      productId: 3,
+      quantity: 1,
+    });
+
+    const shipment = await shipments.create(packer, { fromSiteId: SITE });
+    expect(shipment).toMatchObject({ fromSiteId: SITE });
+    // A request leaving from HQ cannot go on a truck from SITE.
+    await expect(
+      shipments.createPackage(packer, shipment.id, { requestId: REQUEST }),
+    ).rejects.toThrow('errors.packages.otherSource');
+    const pkg = await shipments.createPackage(packer, shipment.id, {
+      requestId: 8,
+    });
+    // HQ's drills are not at SITE.
+    await expect(
+      shipments.pack(packer, pkg.id, { codes: ['D-1'] }),
+    ).rejects.toThrow('errors.packages.itemNotAvailable');
+    await shipments.pack(packer, pkg.id, { codes: ['S-1'] });
+    await shipments.dispatch(packer, shipment.id);
+    expect(item('S-1')).toMatchObject({ status: ItemStatus.IN_TRANSIT });
+    const movements = db
+      .rows(ItemMovement)
+      .filter((row) => row.itemId === item('S-1').id);
+    expect(movements.map((row) => row.siteId)).toEqual([SITE, SITE]);
+  });
+
   it('delivers a request in two receipts, then closes the shipment itself', async () => {
     const { shipments, dispatched, item, status } = setup();
     const { shipmentId, packageId } = await dispatched();

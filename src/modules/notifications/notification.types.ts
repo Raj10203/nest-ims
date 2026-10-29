@@ -15,4 +15,15 @@ export interface NotificationData {
     author: PersonSummary;
     repliedTo: PersonSummary | null;
   };
+  // The receiving site's employee chosen to own a request there.
+  [NotificationType.STOCK_REQUEST_ASSIGNED]: {
+    requestId: number;
+    by: PersonSummary;
+  };
+  // HQ made them the request's requester (its destination moved to their
+  // site, or HQ handed it over there).
+  [NotificationType.STOCK_REQUEST_HANDED_OVER]: {
+    requestId: number;
+    by: PersonSummary;
+  };
 }

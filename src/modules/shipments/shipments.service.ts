@@ -84,10 +84,23 @@ export class ShipmentsService {
     private readonly audit: AuditService,
   ) {}
 
+  // From headquarters unless dto.fromSiteId names another (active) site: a
+  // request routed from that site is packed there.
   async create(actor: User, dto: CreateShipmentDto) {
+    const { manager } = this.dataSource;
+    const fromSiteId = dto.fromSiteId ?? (await this.headquarters(manager)).id;
+    if (
+      dto.fromSiteId &&
+      !(await manager.existsBy(Site, { id: fromSiteId, isActive: true }))
+    ) {
+      throw new BadRequestException(
+        i18nMessage('errors.shipments.fromSiteInvalid', { id: fromSiteId }),
+      );
+    }
     const shipment = await this.shipments.save(
       this.shipments.create({
         status: ShipmentStatus.DRAFT,
+        fromSiteId,
         vehicleNumber: dto.vehicleNumber ?? null,
         driverName: dto.driverName ?? null,
         driverPhone: dto.driverPhone ?? null,
@@ -98,9 +111,9 @@ export class ShipmentsService {
     return this.findOne(shipment.id);
   }
 
-  async findAll({ status, page, limit }: ListShipmentsQueryDto) {
+  async findAll({ status, fromSiteId, page, limit }: ListShipmentsQueryDto) {
     const [items, total] = await findPageDepthOne(this.shipments, {
-      where: { ...(status && { status }) },
+      where: { ...(status && { status }), ...(fromSiteId && { fromSiteId }) },
       order: { id: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
@@ -163,7 +176,7 @@ export class ShipmentsService {
 
   async dispatch(actor: User, id: number) {
     await this.dataSource.transaction(async (manager) => {
-      await this.lockDraft(manager, id);
+      const shipment = await this.lockDraft(manager, id);
       const packages = await manager.find(Package, {
         where: { shipmentId: id },
         order: { id: 'ASC' },
@@ -192,7 +205,6 @@ export class ShipmentsService {
           i18nMessage('errors.shipments.emptyPackage', { id: empty.id }),
         );
       }
-      const hq = await this.headquarters(manager);
       for (const pkg of packages) {
         await moveItems(manager, this.audit, {
           items: contents
@@ -201,7 +213,7 @@ export class ShipmentsService {
           from: ItemStatus.PACKED,
           to: { status: ItemStatus.IN_TRANSIT, siteId: null, shipmentId: id },
           action: MovementAction.DISPATCHED,
-          siteId: hq.id,
+          siteId: shipment.fromSiteId,
           shipmentId: id,
           packageId: pkg.id,
           performedById: actor.id,
@@ -228,17 +240,17 @@ export class ShipmentsService {
     return this.findOne(id);
   }
 
-  // A draft only: nothing has left headquarters, so its packages go and their
-  // items are available again.
+  // A draft only: nothing has left its site, so its packages go and their
+  // items are available there again.
   async cancel(actor: User, id: number) {
     await this.dataSource.transaction(async (manager) => {
-      await this.lockDraft(manager, id);
+      const shipment = await this.lockDraft(manager, id);
       const packages = await manager.find(Package, {
         where: { shipmentId: id },
         loadEagerRelations: false,
       });
       for (const pkg of packages) {
-        await this.dropPackage(manager, actor, pkg);
+        await this.dropPackage(manager, actor, shipment, pkg);
       }
       await manager.save(Shipment, {
         id,
@@ -267,7 +279,7 @@ export class ShipmentsService {
 
   async createPackage(actor: User, shipmentId: number, dto: CreatePackageDto) {
     const id = await this.dataSource.transaction(async (manager) => {
-      await this.lockDraft(manager, shipmentId);
+      const shipment = await this.lockDraft(manager, shipmentId);
       const [request] = await this.lockRequests(manager, [dto.requestId]);
       if (!request) {
         throw new BadRequestException(
@@ -277,6 +289,12 @@ export class ShipmentsService {
         );
       }
       this.assertDeliverable(request);
+      // Its items are at its sending site, so only a shipment from there.
+      if (request.fromSiteId !== shipment.fromSiteId) {
+        throw new BadRequestException(
+          i18nMessage('errors.packages.otherSource', { id: request.id }),
+        );
+      }
       if (
         await manager.existsBy(Package, { shipmentId, requestId: request.id })
       ) {
@@ -378,11 +396,10 @@ export class ShipmentsService {
   async pack(actor: User, id: number, { codes }: PackItemsDto) {
     const shipmentId = await this.shipmentOf(id);
     await this.dataSource.transaction(async (manager) => {
-      await this.lockDraft(manager, shipmentId);
+      const shipment = await this.lockDraft(manager, shipmentId);
       const pkg = await this.lockPackage(manager, id);
       const [request] = await this.lockRequests(manager, [pkg.requestId]);
       this.assertDeliverable(request);
-      const hq = await this.headquarters(manager);
       const items = await manager.find(Item, {
         select: {
           id: true,
@@ -408,7 +425,10 @@ export class ShipmentsService {
             i18nMessage('errors.packages.itemNotFound', { code }),
           );
         }
-        if (item.siteId !== hq.id || item.status !== ItemStatus.AVAILABLE) {
+        if (
+          item.siteId !== shipment.fromSiteId ||
+          item.status !== ItemStatus.AVAILABLE
+        ) {
           throw new ConflictException(
             i18nMessage('errors.packages.itemNotAvailable', { code }),
           );
@@ -444,7 +464,7 @@ export class ShipmentsService {
         from: ItemStatus.AVAILABLE,
         to: { status: ItemStatus.PACKED },
         action: MovementAction.PACKED,
-        siteId: hq.id,
+        siteId: shipment.fromSiteId,
         shipmentId,
         packageId: id,
         performedById: actor.id,
@@ -457,7 +477,7 @@ export class ShipmentsService {
   async unpack(actor: User, id: number, itemId: number) {
     const shipmentId = await this.shipmentOf(id);
     await this.dataSource.transaction(async (manager) => {
-      await this.lockDraft(manager, shipmentId);
+      const shipment = await this.lockDraft(manager, shipmentId);
       const row = await manager.findOne(PackageItem, {
         select: {
           id: true,
@@ -474,7 +494,7 @@ export class ShipmentsService {
           i18nMessage('errors.packages.itemNotInPackage', { itemId }),
         );
       }
-      await this.release(manager, actor, shipmentId, id, [row]);
+      await this.release(manager, actor, shipment, id, [row]);
     });
     return this.findPackage(actor, id);
   }
@@ -482,10 +502,11 @@ export class ShipmentsService {
   async removePackage(actor: User, id: number): Promise<void> {
     const shipmentId = await this.shipmentOf(id);
     await this.dataSource.transaction(async (manager) => {
-      await this.lockDraft(manager, shipmentId);
+      const shipment = await this.lockDraft(manager, shipmentId);
       await this.dropPackage(
         manager,
         actor,
+        shipment,
         await this.lockPackage(manager, id),
       );
     });
@@ -649,32 +670,37 @@ export class ShipmentsService {
     );
   }
 
-  private async dropPackage(manager: EntityManager, actor: User, pkg: Package) {
+  private async dropPackage(
+    manager: EntityManager,
+    actor: User,
+    shipment: Shipment,
+    pkg: Package,
+  ) {
     const rows = await this.contents(
       manager,
       [pkg.id],
       PackageItemStatus.PACKED,
     );
-    await this.release(manager, actor, pkg.shipmentId, pkg.id, rows);
+    await this.release(manager, actor, shipment, pkg.id, rows);
     await manager.remove(Package, pkg);
   }
 
+  // Packed items never left their site, so they are available there again.
   private async release(
     manager: EntityManager,
     actor: User,
-    shipmentId: number,
+    shipment: Shipment,
     packageId: number,
     rows: Content[],
   ) {
     if (!rows.length) return;
-    const hq = await this.headquarters(manager);
     await moveItems(manager, this.audit, {
       items: rows.map((row) => row.item),
       from: ItemStatus.PACKED,
       to: { status: ItemStatus.AVAILABLE },
       action: MovementAction.UNPACKED,
-      siteId: hq.id,
-      shipmentId,
+      siteId: shipment.fromSiteId,
+      shipmentId: shipment.id,
       packageId,
       performedById: actor.id,
     });

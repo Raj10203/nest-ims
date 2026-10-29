@@ -5,6 +5,7 @@ import { StockRequestStatus } from '../common/enums/stock-request-status.enum.js
 import { BaseEntity } from './base.entity.js';
 import { Product } from './product.entity.js';
 import { Shipment } from './shipment.entity.js';
+import { Site } from './site.entity.js';
 import { StockRequest } from './stock-request.entity.js';
 import { User } from './user.entity.js';
 
@@ -34,6 +35,36 @@ export class StockRequestEvent extends BaseEntity {
 
   @Column({ type: 'int', nullable: true })
   productId: number | null;
+
+  // Route changes: the route after it. Assignments: the new assignee
+  // (null when cleared). Requester changes: the new requester.
+  @ManyToOne(() => Site, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'fromSiteId' })
+  fromSite: Site | null;
+
+  @Column({ type: 'int', nullable: true })
+  fromSiteId: number | null;
+
+  @ManyToOne(() => Site, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'toSiteId' })
+  toSite: Site | null;
+
+  @Column({ type: 'int', nullable: true })
+  toSiteId: number | null;
+
+  @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'assigneeId' })
+  assignee: User | null;
+
+  @Column({ type: 'int', nullable: true })
+  assigneeId: number | null;
+
+  @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'requesterId' })
+  requester: User | null;
+
+  @Column({ type: 'int', nullable: true })
+  requesterId: number | null;
 
   @Column({ type: 'int', unsigned: true, nullable: true })
   quantityBefore: number | null;

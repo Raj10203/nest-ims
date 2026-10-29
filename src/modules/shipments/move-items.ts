@@ -12,7 +12,8 @@ export interface ItemMove {
   from: ItemStatus;
   to: Pick<Item, 'status'> & Partial<Pick<Item, 'siteId' | 'shipmentId'>>;
   action: MovementAction;
-  // The movement's site: HQ, or the package's destination.
+  // The movement's site: the shipment's sending site, or the package's
+  // destination.
   siteId: number;
   shipmentId: number;
   packageId: number;

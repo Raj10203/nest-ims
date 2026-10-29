@@ -1,15 +1,26 @@
 import { Column, Entity, Index, JoinColumn, ManyToOne } from 'typeorm';
 import { ShipmentStatus } from '../common/enums/shipment-status.enum.js';
 import { BaseEntity } from './base.entity.js';
+import { Site } from './site.entity.js';
 import { User } from './user.entity.js';
 
-// One trip from headquarters. Its packages say which requests (and so which
-// sites) it serves.
+// One trip from one site (headquarters, or another site for a request routed
+// from there). Its packages say which requests (and so which sites) it serves;
+// every request in it leaves from fromSiteId.
 @Entity('shipments')
 @Index(['status'])
 export class Shipment extends BaseEntity {
   @Column({ type: 'varchar', length: 20 })
   status: ShipmentStatus;
+
+  // Always written; nullable in the database only until a release after
+  // StockRequestRouting makes it NOT NULL.
+  @ManyToOne(() => Site, { nullable: true, onDelete: 'RESTRICT' })
+  @JoinColumn({ name: 'fromSiteId' })
+  fromSite: Site;
+
+  @Column({ type: 'int', nullable: true })
+  fromSiteId: number;
 
   @Column({ type: 'varchar', length: 20, nullable: true })
   vehicleNumber: string | null;
