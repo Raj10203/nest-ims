@@ -55,8 +55,17 @@ export class RabbitMqConnection implements OnApplicationShutdown {
     return this.connection.isConnected();
   }
 
-  createChannel(): ChannelWrapper {
-    const channel = this.connection.createChannel({ setup: assertTopology });
+  // `setup` runs after the job topology on every (re)connect, for a caller's
+  // own exchanges and queues.
+  createChannel(
+    setup?: (channel: ConfirmChannel) => Promise<void>,
+  ): ChannelWrapper {
+    const channel = this.connection.createChannel({
+      setup: async (raw: ConfirmChannel) => {
+        await assertTopology(raw);
+        await setup?.(raw);
+      },
+    });
     // A failed setup is emitted as 'error'; with no listener, EventEmitter throws
     // it as an unhandled rejection, which crashes the process.
     channel.on('error', (err: Error) => {

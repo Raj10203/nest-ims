@@ -145,6 +145,9 @@ export type I18nTranslations = {
             "codeNotInPackage": string;
             "itemsChanged": string;
         };
+        "notifications": {
+            "notFound": string;
+        };
     };
     "messages": {
         "otpQueued": string;

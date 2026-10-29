@@ -137,5 +137,8 @@
     "notInTransit": "This package is not waiting to be received",
     "codeNotInPackage": "Item {code} is not waiting in this package",
     "itemsChanged": "Some of these items changed meanwhile; reload and try again"
+  },
+  "notifications": {
+    "notFound": "Notification {id} not found"
   }
 }

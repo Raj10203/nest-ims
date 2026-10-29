@@ -17,6 +17,7 @@ import {
   Or,
   Repository,
 } from 'typeorm';
+import { NotificationType } from '../../common/enums/notification-type.enum.js';
 import { ShipmentStatus } from '../../common/enums/shipment-status.enum.js';
 import { SiteType } from '../../common/enums/site-type.enum.js';
 import { StockRequestAction } from '../../common/enums/stock-request-action.enum.js';
@@ -40,6 +41,7 @@ import {
   readableStockRequestsWhere,
   type AppAbility,
 } from '../authorization/casl-ability.factory.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 import { CreateCommentDto } from './dto/create-comment.dto.js';
 import { CreateStockRequestDto } from './dto/create-stock-request.dto.js';
 import {
@@ -70,6 +72,16 @@ const PENDING = [
 
 const notMe = (id: number) => Or(Not(id), IsNull());
 
+const personSummary = ({
+  id,
+  firstName,
+  lastName,
+}: Pick<User, 'id' | 'firstName' | 'lastName'>) => ({
+  id,
+  firstName,
+  lastName,
+});
+
 @Injectable()
 export class StockRequestsService {
   constructor(
@@ -83,6 +95,7 @@ export class StockRequestsService {
     private readonly comments: Repository<StockRequestComment>,
     private readonly dataSource: DataSource,
     private readonly abilityFactory: CaslAbilityFactory,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // Always for the requester's own site, which must not be headquarters:
@@ -225,33 +238,68 @@ export class StockRequestsService {
     });
   }
 
-  // Anyone who can read the request may join its conversation.
+  // Anyone who can read the request may join its conversation. Its creator
+  // is notified of everyone else's comments.
   async addComment(actor: User, id: number, dto: CreateCommentDto) {
-    await this.findReadable(this.abilityFactory.createForUser(actor), id);
-    let parentId: number | null = null;
-    if (dto.parentId) {
-      const parent = await this.comments.findOne({
-        select: { id: true, parentId: true },
-        where: { id: dto.parentId, requestId: id },
-        loadEagerRelations: false,
-      });
-      if (!parent) {
-        throw new BadRequestException(
-          i18nMessage('errors.stockRequests.commentNotFound', {
-            id: dto.parentId,
-          }),
-        );
-      }
-      parentId = parent.parentId ?? parent.id;
-    }
-    const saved = await this.comments.save(
-      this.comments.create({
-        requestId: id,
-        parentId,
-        body: dto.body,
-        authorId: actor.id,
-      }),
+    const request = await this.findReadable(
+      this.abilityFactory.createForUser(actor),
+      id,
     );
+    const parent = dto.parentId
+      ? await this.comments.findOne({
+          select: {
+            id: true,
+            parentId: true,
+            author: { id: true, firstName: true, lastName: true },
+          },
+          relations: { author: true },
+          where: { id: dto.parentId, requestId: id },
+          loadEagerRelations: false,
+        })
+      : null;
+    if (dto.parentId && !parent) {
+      throw new BadRequestException(
+        i18nMessage('errors.stockRequests.commentNotFound', {
+          id: dto.parentId,
+        }),
+      );
+    }
+    const { requestedById } = request;
+    const [saved, notification] = await this.dataSource.transaction(
+      async (manager) => {
+        const comment = await manager.save(StockRequestComment, {
+          requestId: id,
+          parentId: parent ? (parent.parentId ?? parent.id) : null,
+          body: dto.body,
+          authorId: actor.id,
+        });
+        const notify =
+          requestedById !== null &&
+          requestedById !== actor.id &&
+          (await manager.existsBy(User, { id: requestedById, isActive: true }));
+        return [
+          comment,
+          notify
+            ? await this.notifications.create(
+                manager,
+                requestedById,
+                NotificationType.STOCK_REQUEST_COMMENT,
+                {
+                  requestId: id,
+                  commentId: comment.id,
+                  parentId: parent?.id ?? null,
+                  excerpt: dto.body.slice(0, 200),
+                  author: personSummary(actor),
+                  repliedTo: parent?.author
+                    ? personSummary(parent.author)
+                    : null,
+                },
+              )
+            : null,
+        ] as const;
+      },
+    );
+    if (notification) this.notifications.send(notification);
     return this.comments.findOne({
       ...depthOneWithout(this.comments, 'request', 'parent'),
       where: { id: saved.id },

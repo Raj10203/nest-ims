@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { FeatureRoleName } from '../../common/enums/feature-role-name.enum.js';
+import { NotificationType } from '../../common/enums/notification-type.enum.js';
 import { RoleKind } from '../../common/enums/role-kind.enum.js';
 import { ROLE_LEVELS, RoleName } from '../../common/enums/role-name.enum.js';
 import { SiteType } from '../../common/enums/site-type.enum.js';
@@ -96,6 +97,7 @@ function setup(stored: Partial<StockRequest> = {}) {
     ),
     create: vi.fn((_entity, value) => value),
     insert: vi.fn().mockResolvedValue(undefined),
+    existsBy: vi.fn().mockResolvedValue(true),
   };
   const requests = {
     findOne: vi.fn(() => Promise.resolve({ ...request })),
@@ -125,15 +127,26 @@ function setup(stored: Partial<StockRequest> = {}) {
       exists: vi.fn().mockResolvedValue(false),
     },
   };
+  const comments = {
+    findOne: vi.fn().mockResolvedValue(null),
+    metadata: { columns: [], relations: [] },
+  };
+  const notifications = {
+    create: vi.fn((_manager, userId, type, data) =>
+      Promise.resolve({ id: 99, userId, type, data }),
+    ),
+    send: vi.fn(),
+  };
   const service = new StockRequestsService(
     requests as any,
     lineRepo as any,
     {} as any,
-    {} as any,
+    comments as any,
     dataSource as any,
     new CaslAbilityFactory(),
+    notifications as any,
   );
-  return { service, manager, site };
+  return { service, manager, site, comments, notifications };
 }
 
 const saved = (manager: ReturnType<typeof setup>['manager'], entity: unknown) =>
@@ -312,5 +325,60 @@ describe('StockRequestsService scope and requester', () => {
     expect(scope(requester)).toEqual({ siteId: SITE });
     expect(scope(reviewer)).toBeUndefined();
     expect(scope(hqManager)).toBeUndefined();
+  });
+});
+
+describe('StockRequestsService comment notifications', () => {
+  const named = (user: User, firstName: string, lastName: string) =>
+    Object.assign(Object.create(user) as User, { firstName, lastName });
+  const author = named(reviewer, 'Amit', 'Shah');
+
+  it("notifies the request's creator of someone else's comment", async () => {
+    const { service, manager, notifications } = setup();
+    await service.addComment(author, 7, { body: 'Sending 3 now' });
+    expect(notifications.create).toHaveBeenCalledWith(
+      manager,
+      requester.id,
+      NotificationType.STOCK_REQUEST_COMMENT,
+      {
+        requestId: 7,
+        commentId: 7,
+        parentId: null,
+        excerpt: 'Sending 3 now',
+        author: { id: reviewer.id, firstName: 'Amit', lastName: 'Shah' },
+        repliedTo: null,
+      },
+    );
+    expect(notifications.send).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 99, userId: requester.id }),
+    );
+  });
+
+  it('names whose comment a reply answers', async () => {
+    const { service, comments, notifications } = setup();
+    comments.findOne.mockResolvedValueOnce({
+      id: 40,
+      parentId: 38,
+      author: { id: hqManager.id, firstName: 'Raj', lastName: 'Patel' },
+    });
+    await service.addComment(author, 7, { body: 'Agreed', parentId: 40 });
+    expect(notifications.create.mock.calls[0][3]).toMatchObject({
+      parentId: 40,
+      repliedTo: { id: hqManager.id, firstName: 'Raj', lastName: 'Patel' },
+    });
+  });
+
+  it("stays quiet about the creator's own comments", async () => {
+    const { service, notifications } = setup();
+    await service.addComment(requester, 7, { body: 'Any update?' });
+    expect(notifications.create).not.toHaveBeenCalled();
+    expect(notifications.send).not.toHaveBeenCalled();
+  });
+
+  it('skips a deactivated creator', async () => {
+    const { service, manager, notifications } = setup();
+    manager.existsBy.mockResolvedValueOnce(false);
+    await service.addComment(author, 7, { body: 'Sending 3 now' });
+    expect(notifications.create).not.toHaveBeenCalled();
   });
 });

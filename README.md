@@ -47,6 +47,7 @@ src/
     items/                   stock: one row per physical item, automatic codes, movements, stock counts
     stock-requests/          sites ask HQ for stock: two-step review chain, quantities, comments, delivery status
     shipments/               HQ packs approved requests into packages, dispatches them; sites receive
+    notifications/           per-user inbox and a server-sent events stream, fanned out across instances through RabbitMQ
     invitations/             invitation emails (listens to user.created), set-password link, resend
     jobs/                    RabbitMQ publisher, consumer, retry topology
     mail/                    dynamic module MailModule.forRoot(options): nodemailer + the "send email OTP" job handler
@@ -250,6 +251,39 @@ stateDiagram-v2
 - **Concurrency**: every change locks the shipment row first, then the package, then the requests in id order, before any plain read (so reads are current, not an older snapshot). Item status changes are conditional updates (`WHERE status = <expected>`), so two packers can never take the same item; a mismatch answers 409. Each package's item moves write one audit entry (`entityId` `package:<id>`) next to the per-item movements.
 - Barcode or QR scanning will call the same endpoints with the scanned codes.
 
+### 1.6.5 Notifications (in-app, live)
+
+A user's inbox, pushed live to every open tab over server-sent events (SSE). For now one event creates one: a comment on a stock request notifies the request's creator, unless they wrote it or are deactivated.
+
+```mermaid
+sequenceDiagram
+    participant A as Commenter
+    participant API1 as API instance 1
+    participant DB as MySQL
+    participant MQ as RabbitMQ (notifications exchange)
+    participant API2 as API instance 2
+    participant C as Creator's tabs
+    C->>API2: GET /notifications/stream (bearer)
+    API2->>MQ: bind user.<id> to this instance's queue
+    A->>API1: POST /stock-requests/:id/comments
+    API1->>DB: comment + notification, one transaction
+    API1->>MQ: publish once, routing key user.<id>
+    MQ->>API2: only instances holding one of the user's streams
+    API2->>C: event: notification
+```
+
+- **Table** `notifications` (`@NotAudited()`): `userId`, `type` (`<subject>.<event>`, `NotificationType`), `data` (JSON, its shape per type in `NotificationData`), `readAt`. The API stores no sentences: the UI writes them from `type` and `data`, in its own language. Names in `data` are a snapshot from when it happened.
+- **Created in the change's transaction** (`NotificationsService.create(manager, ...)`), pushed after the commit (`send`, best effort). A push that fails is only logged: the notification is stored, and the client gets it from the list or the stream replay.
+- **`stock_request.comment` data**: `{ requestId, commentId, parentId, excerpt, author, repliedTo }`. `author` and `repliedTo` are `{ id, firstName, lastName }`; `parentId` and `repliedTo` are set for a reply (the comment answered and its author).
+- **Endpoints** (the caller's own inbox only, so no permission): `GET /notifications` (`?unread=&page=&limit=`, newest first), `GET /notifications/unread-count`, `POST /notifications/:id/read` (404 if not yours), `POST /notifications/read-all`; both reads answer `{ unreadCount }`.
+- **Stream** (`GET /notifications/stream`, bearer like every route):
+  - `retry: 5000`, then, when the client sends `Last-Event-ID`, every `notification` it missed (at most 50), then `ready` `{ unreadCount, resync }`; `resync: true` means more were missed, reload the list.
+  - `notification` (with `id:`) `{ notification, unreadCount }` (replayed ones carry no `unreadCount`; `ready` follows them) and `read` `{ id, unreadCount }` (`id: null` after read-all), so every tab's badge agrees. Only `notification` events carry an id, which is what `Last-Event-ID` resumes from.
+  - A `: ping` comment every 25 s keeps proxies from closing an idle stream.
+  - It **ends when the access token expires**. EventSource reconnects and the new request passes `JwtAuthGuard` again, so a deactivated user or a revoked session is cut off within one access token lifetime.
+- **Optimizations**: one RabbitMQ message per notification, serialized once. Each API instance has one exclusive queue on the direct `notifications` exchange and binds `user.<id>` only while it holds one of that user's streams, so an event reaches only the instances that need it. Each instance keeps one heartbeat timer for all its streams. A client whose send buffer passes 64 KB is cut off instead of buffered for, and resumes from `Last-Event-ID`. A user has at most 5 streams per instance (the oldest is closed). On shutdown every stream is ended, so a deploy is not held up by open connections.
+- **Through next-ims**: the browser opens an `EventSource` on a next-ims Route Handler, which adds the bearer token from its cookies, forwards `Last-Event-ID` and pipes the stream through unbuffered. A proxy in front of the API must not buffer `text/event-stream` (`X-Accel-Buffering: no` is sent for nginx) and needs an idle timeout above 25 s.
+
 ### 1.7 Background jobs (RabbitMQ)
 
 ```mermaid
@@ -347,6 +381,7 @@ All routes are under `/api`, except `GET /health`, `GET /health/live` and the do
 | Stock requests | `POST/GET /stock-requests` (`?status=&siteId=&awaitingMe=&mine=`), `GET /stock-requests/:id`, `GET /stock-requests/:id/events`, `GET/POST /stock-requests/:id/comments`, `POST /stock-requests/:id/approve`, `/reject`, `/cancel`, `/close`                                                                                                                      |
 | Shipments      | `POST/GET /shipments` (`?status=`), `GET/PATCH /shipments/:id`, `POST /shipments/:id/packages`, `/dispatch`, `/cancel`, `/close`                                                                                                                                                                                                                                 |
 | Packages       | `GET /packages` (`?status=&shipmentId=&requestId=&siteId=`), `GET/DELETE /packages/:id`, `POST /packages/:id/items`, `DELETE /packages/:id/items/:itemId`, `POST /packages/:id/receive`                                                                                                                                                                          |
+| Notifications  | `GET /notifications` (`?unread=&page=&limit=`), `GET /notifications/unread-count`, `GET /notifications/stream` (server-sent events), `POST /notifications/:id/read`, `POST /notifications/read-all`                                                                                                                                                              |
 | Audit          | `GET /audit-logs` (super admin, admin)                                                                                                                                                                                                                                                                                                                           |
 | Health         | `GET /health`, `GET /health/live` (no prefix)                                                                                                                                                                                                                                                                                                                    |
 
@@ -540,35 +575,36 @@ sequenceDiagram
 
 ## 4. Design decisions at a glance
 
-| Decision                                                                | Why                                                                                                                                                                            |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Queue + separate worker for email                                       | Keeps API latency low, survives SMTP outages through retries                                                                                                                   |
-| Quorum queues, ack after handler                                        | No lost jobs on broker or worker restart (at-least-once, idempotent handlers)                                                                                                  |
-| Permissions in DB, scoping in code                                      | Change role capabilities with a seed; keep hierarchy rules type-checked and tested                                                                                             |
-| 404 instead of 403 for out-of-scope records                             | Does not reveal which ids exist                                                                                                                                                |
-| One approve endpoint for both review steps, two different people        | The client cannot skip or repeat a step: the request's status says which permission is needed, and the reviewer can never also approve                                         |
-| Hashed refresh tokens and OTPs                                          | A database leak does not expose usable credentials                                                                                                                             |
-| zod for env and requests                                                | One validation library; bad config fails at boot, not at runtime                                                                                                               |
-| Migrations only, backward compatible                                    | Zero-downtime deploys; old version keeps working during schema change                                                                                                          |
-| One image, many commands                                                | Same artifact for API, worker, migrations and seed; SHA-tagged for rollback                                                                                                    |
-| Docker-only development                                                 | Identical environment for everyone, one command to start                                                                                                                       |
-| `MailModule.forRoot(options)` dynamic module                            | Config is passed in by the caller, so the service never reads env and tests pass options directly                                                                              |
-| zod schema on the parameter (`@Body({ schema })`)                       | One schema validates the request and documents it in Swagger; examples are tested against it                                                                                   |
-| Translation keys in exceptions, translated in one filter                | Services stay language-agnostic and tests assert keys; adding a language is a folder of JSON files plus its zod locale                                                         |
-| Avatars in Azure Blob Storage, URL on the user                          | The API never serves image bytes; browsers and CDNs load them directly. Blob names are unique, so they are cached for a year and replacing an avatar never shows a stale image |
-| Avatars: size, type from bytes, then full content check; no re-encoding | Each layer stops a different attack (memory, renamed files, polyglots and bombs) while the client keeps control of the image it sends                                          |
-| Audit rows from a TypeORM subscriber, in the change's transaction       | Automatic for every entity, and a change can never be saved without its audit entry                                                                                            |
-| `/health` reports, `/health/live` is the probe                          | Ops see exactly which dependency is down; a dependency outage does not get the API container restarted                                                                         |
-| Invitation link instead of an emailed password                          | No password ever sits in a mailbox, a queue message or an admin's head; accepting the link also verifies the email                                                             |
-| `user.created` event for invitations                                    | Users stay unaware of invitations and mail; a failed send never fails user creation                                                                                            |
-| Deactivate instead of delete once a user has signed in                  | History (audit log, stock movements, sites) keeps pointing at a real person; access ends at once because the guard reloads the user on every request                           |
-| Deactivated answers 401, not 403                                        | Clients already treat 401 as a lost session and sign out; a 403 would be read as "verify your email"                                                                           |
-| Product type on the product, not the category                           | One category mixes kinds of item; categories stay plain grouping metadata                                                                                                      |
-| One measure type per product                                            | Stock ids are per piece or per pack, never per bolt; an item sold both ways is two products                                                                                    |
-| One row per physical item, no quantity table                            | Every bolt box and drill can be traced; stock counts cannot drift from the items they count                                                                                    |
-| Item location is a site or a shipment, never neither                    | Goods on the road stay traceable, and a lost item stays pinned to the shipment it was lost from                                                                                |
-| One package per request; request status from received counts            | Receiving needs no matching, and the status can never disagree with what the site actually holds                                                                               |
-| Per-product counter under a row lock                                    | Codes are sequential, never duplicated or reused, without locking anything but that product                                                                                    |
-| Feature roles on top of one primary role                                | Capabilities follow the person, not the site or rank; granting one is a single call, not a new account                                                                         |
-| Lists counted without `select` (`findPageDepthOne`)                     | TypeORM 1.1 counts a selecting find with `COUNT(DISTINCT <all columns>)`, which MySQL makes skip rows with any NULL                                                            |
-| `forwardRef` between Users and Sites                                    | Each rule stays in the service that owns the data; new cycles should prefer a third module or a one-way call                                                                   |
+| Decision                                                                | Why                                                                                                                                                                                   |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Queue + separate worker for email                                       | Keeps API latency low, survives SMTP outages through retries                                                                                                                          |
+| Quorum queues, ack after handler                                        | No lost jobs on broker or worker restart (at-least-once, idempotent handlers)                                                                                                         |
+| Permissions in DB, scoping in code                                      | Change role capabilities with a seed; keep hierarchy rules type-checked and tested                                                                                                    |
+| 404 instead of 403 for out-of-scope records                             | Does not reveal which ids exist                                                                                                                                                       |
+| One approve endpoint for both review steps, two different people        | The client cannot skip or repeat a step: the request's status says which permission is needed, and the reviewer can never also approve                                                |
+| Hashed refresh tokens and OTPs                                          | A database leak does not expose usable credentials                                                                                                                                    |
+| zod for env and requests                                                | One validation library; bad config fails at boot, not at runtime                                                                                                                      |
+| Migrations only, backward compatible                                    | Zero-downtime deploys; old version keeps working during schema change                                                                                                                 |
+| One image, many commands                                                | Same artifact for API, worker, migrations and seed; SHA-tagged for rollback                                                                                                           |
+| Docker-only development                                                 | Identical environment for everyone, one command to start                                                                                                                              |
+| `MailModule.forRoot(options)` dynamic module                            | Config is passed in by the caller, so the service never reads env and tests pass options directly                                                                                     |
+| zod schema on the parameter (`@Body({ schema })`)                       | One schema validates the request and documents it in Swagger; examples are tested against it                                                                                          |
+| Translation keys in exceptions, translated in one filter                | Services stay language-agnostic and tests assert keys; adding a language is a folder of JSON files plus its zod locale                                                                |
+| Avatars in Azure Blob Storage, URL on the user                          | The API never serves image bytes; browsers and CDNs load them directly. Blob names are unique, so they are cached for a year and replacing an avatar never shows a stale image        |
+| Avatars: size, type from bytes, then full content check; no re-encoding | Each layer stops a different attack (memory, renamed files, polyglots and bombs) while the client keeps control of the image it sends                                                 |
+| Audit rows from a TypeORM subscriber, in the change's transaction       | Automatic for every entity, and a change can never be saved without its audit entry                                                                                                   |
+| `/health` reports, `/health/live` is the probe                          | Ops see exactly which dependency is down; a dependency outage does not get the API container restarted                                                                                |
+| Invitation link instead of an emailed password                          | No password ever sits in a mailbox, a queue message or an admin's head; accepting the link also verifies the email                                                                    |
+| `user.created` event for invitations                                    | Users stay unaware of invitations and mail; a failed send never fails user creation                                                                                                   |
+| Deactivate instead of delete once a user has signed in                  | History (audit log, stock movements, sites) keeps pointing at a real person; access ends at once because the guard reloads the user on every request                                  |
+| Deactivated answers 401, not 403                                        | Clients already treat 401 as a lost session and sign out; a 403 would be read as "verify your email"                                                                                  |
+| Product type on the product, not the category                           | One category mixes kinds of item; categories stay plain grouping metadata                                                                                                             |
+| One measure type per product                                            | Stock ids are per piece or per pack, never per bolt; an item sold both ways is two products                                                                                           |
+| One row per physical item, no quantity table                            | Every bolt box and drill can be traced; stock counts cannot drift from the items they count                                                                                           |
+| Item location is a site or a shipment, never neither                    | Goods on the road stay traceable, and a lost item stays pinned to the shipment it was lost from                                                                                       |
+| One package per request; request status from received counts            | Receiving needs no matching, and the status can never disagree with what the site actually holds                                                                                      |
+| Notifications over SSE, fanned out through RabbitMQ                     | Server to browser is all a notification needs; no third-party service, and RabbitMQ already runs. Per-user bindings send each event only to the instances holding that user's streams |
+| Per-product counter under a row lock                                    | Codes are sequential, never duplicated or reused, without locking anything but that product                                                                                           |
+| Feature roles on top of one primary role                                | Capabilities follow the person, not the site or rank; granting one is a single call, not a new account                                                                                |
+| Lists counted without `select` (`findPageDepthOne`)                     | TypeORM 1.1 counts a selecting find with `COUNT(DISTINCT <all columns>)`, which MySQL makes skip rows with any NULL                                                                   |
+| `forwardRef` between Users and Sites                                    | Each rule stays in the service that owns the data; new cycles should prefer a third module or a one-way call                                                                          |

@@ -19,6 +19,12 @@ import { MFA_TOKEN_TYPE } from './mfa.service.js';
 import { IS_PUBLIC } from './public.decorator.js';
 import { i18nMessage } from '../../common/i18n/i18n-message.js';
 
+export type AuthenticatedRequest = Request & {
+  user: User;
+  // Epoch ms; a long-lived response (the notification stream) ends here.
+  tokenExpiresAt: number;
+};
+
 // Registered globally (APP_GUARD): every route needs a valid access token
 // unless it is marked @Public(), and the user's email must be verified unless
 // it is marked @AllowUnverifiedEmail().
@@ -38,9 +44,7 @@ export class JwtAuthGuard implements CanActivate {
     );
     if (isPublic) return true;
 
-    const request = context
-      .switchToHttp()
-      .getRequest<Request & { user?: User }>();
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const [scheme, token] = request.headers.authorization?.split(' ') ?? [];
     if (scheme !== 'Bearer' || !token) {
       throw new UnauthorizedException(
@@ -49,14 +53,17 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     let userId: number;
+    let expiresAt: number;
     try {
-      const payload = await this.jwt.verifyAsync<{ sub: number; typ?: string }>(
-        token,
-        { secret: env.JWT_ACCESS_SECRET },
-      );
+      const payload = await this.jwt.verifyAsync<{
+        sub: number;
+        exp: number;
+        typ?: string;
+      }>(token, { secret: env.JWT_ACCESS_SECRET });
       // An MFA challenge is signed with the same secret but is not a login.
       if (payload.typ === MFA_TOKEN_TYPE) throw new Error('MFA challenge');
       userId = payload.sub;
+      expiresAt = payload.exp * 1000;
     } catch {
       throw new UnauthorizedException(
         i18nMessage('errors.auth.invalidAccessToken'),
@@ -80,6 +87,7 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     request.user = user;
+    request.tokenExpiresAt = expiresAt;
     this.cls.set('actor', { id: user.id, role: user.role.name });
     return true;
   }
